@@ -117,14 +117,16 @@ nssm set AIAutoWorker AppDirectory C:\aiauto\backend
 Redis is required for the queue, realtime updates, rate limiting and
 login lockout. Official Redis has no native Windows build — pick one:
 
-1. **Memurai** (Redis-compatible, native Windows service, free Developer
+1. **Memurai** (Redis-7-compatible, native Windows service, free Developer
    edition): https://www.memurai.com → install, it runs on port 6379
    automatically. Recommended for the single-machine office setup.
-2. **Redis for Windows port** (free, simple `.msi`):
+2. **Docker Desktop**: `docker run -d --name redis -p 6379:6379 --restart unless-stopped redis:7`
+3. **WSL2**: `sudo apt install redis-server && sudo service redis-server start`
+4. **Redis for Windows port** (free `.msi`, but old — Redis 5.0):
    https://github.com/tporadowski/redis/releases → install
-   `Redis-x64-*.msi`, keep "Add to PATH" and "Run as service" checked.
-3. **Docker Desktop**: `docker run -d --name redis -p 6379:6379 --restart unless-stopped redis:7`
-4. **WSL2**: `sudo apt install redis-server && sudo service redis-server start`
+   `Redis-x64-*.msi` with "Run as service" checked. AIAuto supports this
+   server (the client speaks the classic RESP2 protocol), but prefer
+   Memurai or Docker for anything long-term.
 
 Verify it works: `redis-cli ping` → `PONG` (or check the Admin → System
 page shows *Redis OK* after starting the backend).

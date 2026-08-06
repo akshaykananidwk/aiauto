@@ -13,6 +13,10 @@ def get_redis() -> aioredis.Redis:
         _client = aioredis.from_url(
             get_settings().redis_url,
             decode_responses=True,
+            # RESP2: newer redis-py defaults to the RESP3 HELLO handshake,
+            # which Redis servers older than 6.0 (e.g. the Windows 5.0 port)
+            # reject with "unknown command HELLO"
+            protocol=2,
             # fail fast when Redis is down instead of stalling API requests
             # (socket_timeout must stay above the queue's 5s blocking pop)
             socket_connect_timeout=3,
