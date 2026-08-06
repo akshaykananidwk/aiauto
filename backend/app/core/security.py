@@ -1,0 +1,79 @@
+"""Password hashing, JWT creation/verification and secret encryption."""
+from __future__ import annotations
+
+import base64
+import hashlib
+import uuid
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+import bcrypt
+import jwt
+from cryptography.fernet import Fernet, InvalidToken
+
+from app.core.config import get_settings
+
+
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
+
+
+def verify_password(password: str, hashed: str) -> bool:
+    try:
+        return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("utf-8"))
+    except ValueError:
+        return False
+
+
+def _create_token(subject: str, token_type: str, expires_delta: timedelta, extra: dict[str, Any] | None = None) -> str:
+    settings = get_settings()
+    now = datetime.now(timezone.utc)
+    payload: dict[str, Any] = {
+        "sub": subject,
+        "type": token_type,
+        "iat": now,
+        "exp": now + expires_delta,
+        "jti": uuid.uuid4().hex,
+    }
+    if extra:
+        payload.update(extra)
+    return jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
+
+
+def create_access_token(user_id: int, role: str) -> str:
+    settings = get_settings()
+    return _create_token(
+        str(user_id), "access", timedelta(minutes=settings.access_token_minutes), {"role": role}
+    )
+
+
+def create_refresh_token(user_id: int) -> str:
+    settings = get_settings()
+    return _create_token(str(user_id), "refresh", timedelta(days=settings.refresh_token_days))
+
+
+def decode_token(token: str, expected_type: str = "access") -> dict[str, Any]:
+    """Decode and validate a JWT. Raises jwt.InvalidTokenError on any problem."""
+    settings = get_settings()
+    payload = jwt.decode(token, settings.secret_key, algorithms=[settings.jwt_algorithm])
+    if payload.get("type") != expected_type:
+        raise jwt.InvalidTokenError("wrong token type")
+    return payload
+
+
+# ---- symmetric encryption for stored secrets (e.g. GitHub token) ----
+
+def _fernet() -> Fernet:
+    key = hashlib.sha256(get_settings().secret_key.encode("utf-8")).digest()
+    return Fernet(base64.urlsafe_b64encode(key))
+
+
+def encrypt_secret(value: str) -> str:
+    return _fernet().encrypt(value.encode("utf-8")).decode("utf-8")
+
+
+def decrypt_secret(value: str) -> str:
+    try:
+        return _fernet().decrypt(value.encode("utf-8")).decode("utf-8")
+    except (InvalidToken, ValueError):
+        return ""

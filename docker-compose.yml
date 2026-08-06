@@ -1,0 +1,79 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: aiauto
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aiauto}
+      POSTGRES_DB: aiauto
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiauto"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://aiauto:${POSTGRES_PASSWORD:-aiauto}@db:5432/aiauto
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./storage:/app/storage
+      - ./backups:/app/backups
+      - ./logs:/app/logs
+      - ./VERSION:/repo/VERSION:ro
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+
+  # The worker normally runs natively on the Windows master computer
+  # (it needs the visible, logged-in Chrome). This containerised worker
+  # is only useful for AI_PROVIDER=api or headless testing.
+  worker:
+    build: ./backend
+    profiles: ["worker"]
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://aiauto:${POSTGRES_PASSWORD:-aiauto}@db:5432/aiauto
+      REDIS_URL: redis://redis:6379/0
+    command: ["python", "-m", "worker.main"]
+    volumes:
+      - ./storage:/app/storage
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  redisdata:

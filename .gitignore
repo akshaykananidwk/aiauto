@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environment / secrets — never committed, never overwritten by the updater
+.env
+config.php
+
+# Runtime data — protected from updates
+storage/
+uploads/
+backups/
+logs/
+*.log
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Playwright
+.playwright/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
