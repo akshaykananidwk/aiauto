@@ -27,7 +27,11 @@ services:
       retries: 10
 
   backend:
-    build: ./backend
+    # context is the repo root so the container mirrors the repo layout —
+    # required for the one-click updater to operate on the right tree
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     restart: unless-stopped
     env_file: .env
     environment:
@@ -37,7 +41,6 @@ services:
       - ./storage:/app/storage
       - ./backups:/app/backups
       - ./logs:/app/logs
-      - ./VERSION:/repo/VERSION:ro
     ports:
       - "8000:8000"
     depends_on:
@@ -56,9 +59,11 @@ services:
 
   # The worker normally runs natively on the Windows master computer
   # (it needs the visible, logged-in Chrome). This containerised worker
-  # is only useful for AI_PROVIDER=api or headless testing.
+  # is only useful for API providers or headless testing.
   worker:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     profiles: ["worker"]
     restart: unless-stopped
     env_file: .env

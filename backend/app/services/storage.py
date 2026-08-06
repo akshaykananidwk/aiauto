@@ -92,6 +92,26 @@ class StorageService:
                 total += p.stat().st_size
         return total
 
+    async def used_bytes_cached(self) -> int:
+        """Tree walk off the event loop, cached for 60 s — the sync walk
+        on every submission/dashboard load would stall the whole API on
+        large storage trees."""
+        import asyncio
+
+        from app.services.cache import cache_get, cache_set
+
+        cached = await cache_get("storage_used_bytes")
+        if cached is not None:
+            return int(cached)
+        total = await asyncio.to_thread(self.used_bytes)
+        await cache_set("storage_used_bytes", total, ttl_seconds=60)
+        return total
+
+    async def check_storage_limit_async(self, limit_gb: int | None = None) -> None:
+        limit = (limit_gb or self.settings.storage_limit_gb) * 1024**3
+        if await self.used_bytes_cached() >= limit:
+            raise RuntimeError("storage limit reached — ask the administrator to free space")
+
     def check_storage_limit(self) -> None:
         limit = self.settings.storage_limit_gb * 1024**3
         if self.used_bytes() >= limit:

@@ -9,18 +9,28 @@ export function setTokens(tokens) {
   else localStorage.removeItem('aiauto_tokens')
 }
 
-async function refreshTokens() {
-  const tokens = getTokens()
-  if (!tokens?.refresh_token) return null
-  const res = await fetch(`${BASE}/auth/refresh`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ refresh_token: tokens.refresh_token }),
-  })
-  if (!res.ok) { setTokens(null); return null }
-  const fresh = await res.json()
-  setTokens(fresh)
-  return fresh
+// Single-flight refresh: refresh tokens are single-use (the backend
+// rotates them), so concurrent 401s must share ONE refresh request —
+// otherwise the losers revoke the winner's token and force a logout.
+let refreshInFlight = null
+
+function refreshTokens() {
+  if (!refreshInFlight) {
+    refreshInFlight = (async () => {
+      const tokens = getTokens()
+      if (!tokens?.refresh_token) return null
+      const res = await fetch(`${BASE}/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: tokens.refresh_token }),
+      })
+      if (!res.ok) { setTokens(null); return null }
+      const fresh = await res.json()
+      setTokens(fresh)
+      return fresh
+    })().finally(() => { refreshInFlight = null })
+  }
+  return refreshInFlight
 }
 
 export async function api(path, { method = 'GET', body, formData, raw = false } = {}) {

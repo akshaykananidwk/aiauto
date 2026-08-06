@@ -1,6 +1,17 @@
 import pytest
 
-from app.services.storage import guess_mime, is_image, safe_filename
+from app.services.storage import StorageService, guess_mime, is_image, safe_filename
+
+
+def test_abs_path_rejects_traversal():
+    storage = StorageService()
+    with pytest.raises(ValueError):
+        storage.abs_path("../../etc/passwd")
+    with pytest.raises(ValueError):
+        storage.abs_path("results/../../../../etc/shadow")
+    # normal relative paths resolve inside the storage root
+    inside = storage.abs_path("results/abc/file.png")
+    assert str(inside).startswith(str(storage.root.resolve()))
 
 
 def test_safe_filename_strips_paths():

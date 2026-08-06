@@ -48,11 +48,13 @@ class ConnectionManager:
             self.disconnect(ws)
 
     async def _listen(self) -> None:
+        backoff = 2
         while True:
             try:
                 redis = get_redis()
                 pubsub = redis.pubsub()
                 await pubsub.subscribe(CHANNEL)
+                backoff = 2
                 async for message in pubsub.listen():
                     if message["type"] != "message":
                         continue
@@ -61,8 +63,10 @@ class ConnectionManager:
             except asyncio.CancelledError:
                 return
             except Exception as exc:
-                logger.warning("event listener reconnecting after error: %s", exc)
-                await asyncio.sleep(2)
+                logger.warning("event listener reconnecting in %ss after error: %s",
+                               backoff, exc)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30)
 
     def start(self) -> None:
         if self._listener_task is None or self._listener_task.done():

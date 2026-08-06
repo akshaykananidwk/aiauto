@@ -1,57 +1,88 @@
 # AIAuto — Central AI Automation Platform
 
-A production-ready platform that lets office staff use a **single, centrally
-managed ChatGPT Pro session** without ever seeing the account, the browser,
-or each other's conversations.
+An enterprise-grade platform that lets office staff use centrally managed
+AI — a **single ChatGPT Pro session** and/or **official AI APIs** —
+without ever seeing the account, the browser, or each other's data.
 
 ```
 Staff PC ──▶ Login ──▶ Prompt ──▶ Central Server (FastAPI + Redis queue)
                                         │
                                         ▼
-                            Master PC worker (Playwright)
-                            drives the logged-in ChatGPT Pro Chrome
-                                        │
+                          Master PC worker (Playwright / APIs)
+                          ChatGPT Pro ▸ OpenAI ▸ Claude ▸ Gemini
+                                        │   (automatic failover)
              text / images / files  ◀───┘
                                         │
 Staff PC ◀── WebSocket live status ◀────┘
 ```
 
 > **Note on Terms of Service:** automating the ChatGPT *web UI* may violate
-> OpenAI's terms and can break when the UI changes. The platform ships with a
-> pluggable provider: set `AI_PROVIDER=api` and an `OPENAI_API_KEY` to use the
-> official OpenAI API with the exact same staff experience. Browser automation
-> mode is provided because it is what this project was specified to do — use
-> it at your own discretion.
+> OpenAI's terms and can break when the UI changes. The platform is
+> provider-pluggable — set `AI_PROVIDER=openai|anthropic|gemini` to use
+> official APIs with the identical staff experience, or configure a
+> failover chain mixing both. Browser automation mode exists because this
+> project was specified around it — use it at your own discretion.
 
-## Features
+## Highlights
 
-- **Roles & auth** — admin + staff, JWT (access/refresh), bcrypt hashing,
-  rate limiting, full audit trail.
-- **Queue** — Redis-backed FIFO with priorities, automatic retries,
-  cancellation, live queue dashboard.
-- **Browser automation** — attaches to the already-running, logged-in Chrome
-  via CDP (or launches a persistent profile), sends the prompt, waits for
-  completion, captures text, downloads generated **images and files**
-  (PDF/DOCX/XLSX/PPTX/ZIP/…), builds thumbnails, and can delete each
-  conversation from the ChatGPT account afterwards.
-- **Privacy** — staff see only their own history; admin sees everything;
-  nobody but the worker touches ChatGPT.
-- **Realtime** — WebSocket events: Submitted → Processing → Generating image
-  → Downloading → Completed.
-- **One-click GitHub updates** — save repo/branch/token once; *Check for
-  Update* shows new commits (version, message, author, date); *Update Now*
-  downloads from GitHub, backs up first, never overwrites `.env` /
-  `uploads/` / `storage/` / `config.php`, runs DB migrations automatically,
-  clears the cache, and **rolls back automatically on any error**.
-- **Admin settings** — concurrency, queue size, timeouts, retries, storage
-  limits, browser profile path, backup retention — editable from the UI.
+**83 features** — see [FEATURES.md](FEATURES.md) for the full list.
 
-## Tech Stack
+- **Privacy-first**: staff see only their own prompts, results and history;
+  admins see everything; nobody touches the AI accounts.
+- **Multi-provider AI** with per-prompt selection, auto-failover, token
+  and cost tracking, usage analytics.
+- **Enterprise auth**: JWT + rotation + revocation, brute-force lockout,
+  role-based access, personal API keys, full audit trail.
+- **Queue** with priorities, retries, cancellation, multi-worker failover
+  and a live dashboard.
+- **Productivity**: shared prompt library (categories/tags/favorites),
+  scheduled prompts, voice input/output, exports.
+- **Notifications**: in-app center, WebSocket live status, email,
+  Telegram, webhooks (Slack/WhatsApp gateways), desktop notifications.
+- **Operations**: one-click GitHub updates with auto-backup + rollback,
+  scheduled backups, restore wizard, system health monitoring, plugins.
+- **Modern UI**: React, dark/light theme, mobile-responsive, installable PWA.
 
-Python 3.13 · FastAPI · SQLAlchemy 2 (async) · PostgreSQL (or SQLite for
-testing) · Redis · Playwright · React 18 + Vite · Docker · Windows-compatible.
+## Quick start (one command)
 
-## Repository Layout
+```bash
+git clone <your-repo-url> aiauto && cd aiauto
+./setup.sh            # Windows: setup.bat
+./start.sh            # Windows: start.bat   (add --with-worker on the master PC)
+```
+
+`setup` verifies requirements, creates the venv, installs Python + Node
+packages, generates `.env` with a fresh SECRET_KEY, migrates the database
+(SQLite fallback works out of the box), seeds the admin account (prints
+the initial password), and builds the frontend. `start` launches
+everything and reports **System Ready** once every service is healthy.
+
+Then open **http://localhost:8000** — API docs at `/api/docs`.
+
+### Docker instead
+
+```bash
+cp .env.example .env      # set SECRET_KEY + POSTGRES_PASSWORD
+docker compose up -d --build
+```
+
+Frontend: http://localhost:8080 · API: http://localhost:8000
+
+### Master computer (Windows)
+
+The worker that drives ChatGPT runs natively where Chrome is logged in:
+
+1. `scripts\start_master_chrome.bat` → log into ChatGPT Pro once
+2. `start.bat --with-worker` (or `scripts\run_worker.bat`)
+
+See [docs/INSTALLATION.md](docs/INSTALLATION.md) for details.
+
+## Tech stack
+
+Python 3.11+ · FastAPI · SQLAlchemy 2 (async) · PostgreSQL / SQLite ·
+Redis · Playwright · React 18 + Vite · Docker · Windows-compatible
+
+## Repository layout
 
 ```
 backend/
@@ -61,43 +92,33 @@ backend/
     models/       SQLAlchemy models
     schemas/      Pydantic request/response models
     repositories/ data access layer
-    services/     business logic (queue, prompts, storage, update system…)
+    services/     business logic (queue, quota, notify, analytics, update…)
     api/v1/       HTTP + WebSocket endpoints
-    ws/           WebSocket manager (Redis pub/sub bridge)
-  worker/         master-computer worker + Playwright automation
+  worker/         master-computer worker + AI providers
   alembic/        database migrations
-  tests/          unit tests
-frontend/         React app (staff + admin dashboards)
-scripts/          admin bootstrap, Windows helper scripts
-docs/             installation, deployment, API, update-system docs
+  tests/          67+ automated tests
+frontend/         React app (staff + admin dashboards, PWA)
+plugins/          drop-in Python plugins
+scripts/          setup, start, admin bootstrap, load test, Windows helpers
+docs/             installation, deployment, API, update system
 ```
-
-## Quick Start (Docker)
-
-```bash
-cp .env.example .env             # edit SECRET_KEY at minimum!
-docker compose up -d --build
-docker compose exec backend python /app/../scripts/create_admin.py --password 'ChangeMe123'
-# or: docker compose exec backend python -c "..." — see docs/INSTALLATION.md
-```
-
-Frontend: http://localhost:8080 · API docs: http://localhost:8000/api/docs
-
-The **worker runs natively on the Windows master computer** (it needs the
-visible logged-in Chrome). See `docs/INSTALLATION.md`.
 
 ## Documentation
 
+- [Feature list](FEATURES.md)
 - [Installation guide](docs/INSTALLATION.md)
-- [Deployment guide](docs/DEPLOYMENT.md)
+- [Deployment guide](docs/DEPLOYMENT.md) — HTTPS, services, scaling
 - [API reference](docs/API.md)
-- [Update system](docs/UPDATE_SYSTEM.md)
+- [Update system](docs/UPDATE_SYSTEM.md) — one-click updates & rollback
+- [Security overview](SECURITY.md)
+- [Changelog](CHANGELOG.md)
 
 ## Testing
 
 ```bash
 cd backend
-python -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt pytest pytest-asyncio
-pytest
+python -m venv .venv && . .venv/bin/activate     # Windows: .venv\Scripts\activate
+pip install -r requirements-dev.txt
+pytest                                            # 67 tests
+python ../scripts/loadtest.py --password <admin-pw>   # quick load check
 ```

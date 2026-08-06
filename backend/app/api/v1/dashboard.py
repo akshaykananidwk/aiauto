@@ -24,3 +24,14 @@ async def staff_dashboard(
     user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> StaffDashboard:
     return await DashboardService(db).staff(user.id)
+
+
+@router.get("/announcement")
+async def announcement(
+    _: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> dict:
+    """Company-wide announcement banner text (set by admins in Settings)."""
+    from app.repositories.setting import SettingRepository
+
+    text = await SettingRepository(db).get("app.announcement", "")
+    return {"announcement": text or ""}

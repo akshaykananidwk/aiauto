@@ -53,7 +53,12 @@ rate limiting and audit logging are built in.
 ## Running as services
 
 **Docker:** `restart: unless-stopped` is already configured; the one-click
-updater's auto-restart relies on this policy.
+updater's auto-restart relies on this policy. The backend image is built
+from the **repo root** (`context: .`, `dockerfile: backend/Dockerfile`) so
+the container mirrors the repository layout and the updater operates on
+the right tree (`AIAUTO_ROOT=/app` is set in the image). If you deploy
+with a custom layout, always set `AIAUTO_ROOT` to the directory that
+contains `VERSION` — the updater refuses to run otherwise.
 
 **systemd (native Linux):**
 

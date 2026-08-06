@@ -12,6 +12,9 @@ class AIResult:
     # local temp paths of downloaded artifacts (moved into storage by the worker)
     images: list[tuple[str, bytes]] = field(default_factory=list)  # (filename, data)
     files: list[tuple[str, bytes]] = field(default_factory=list)
+    model: str = ""
+    input_tokens: int = 0   # exact for API providers, estimated for browser
+    output_tokens: int = 0
 
 
 class AIProvider(Protocol):

@@ -1,157 +1,357 @@
 """AIAuto worker — runs on the master computer.
 
-Consumes the Redis queue, drives the AI provider (ChatGPT browser
-session or OpenAI API), stores results and files, and publishes
-realtime status events. Run with:
+Consumes the Redis queue, drives the AI providers (ChatGPT browser
+session and/or official APIs) with automatic failover, stores results
+and files, records token/cost usage, and publishes realtime status
+events. Run with:
 
     python -m worker.main
+
+Correctness notes:
+  * Terminal status writes use a guarded UPDATE (`WHERE status =
+    'processing'`) so a cancellation committed by the API mid-job is
+    never clobbered by the worker's completion/failure commit.
+  * Realtime publishes happen only AFTER the durable commit and are
+    best-effort — a Redis hiccup must never re-run a completed job.
 """
 from __future__ import annotations
 
 import asyncio
+import os
 import signal
+import socket
 from datetime import datetime, timezone
 from pathlib import Path
+
+from sqlalchemy import update as sql_update
 
 from app.core.config import get_settings
 from app.core.logging import get_logger, setup_logging
 from app.db.session import async_session_factory, init_db
 from app.models.file import FileKind, PromptFile
 from app.models.prompt import Prompt, PromptStatus
+from app.schemas.settings import AdminSettings
 from app.services import events
 from app.services.audit import audit
-from app.services.queue import (
-    CHROME_STATUS_KEY,
-    CURRENT_JOB_KEY,
-    HEARTBEAT_KEY,
-    QueueService,
+from app.services.costs import estimate_cost, estimate_tokens
+from app.services.notify import NotificationService
+from app.services.queue import QueueService
+from app.services.redis_client import close_redis
+from worker.automation.base import (
+    AIProvider,
+    AIResult,
+    GenerationTimeoutError,
+    LoginExpiredError,
 )
-from app.services.redis_client import close_redis, get_redis
-from app.services.storage import StorageService, guess_mime, is_image
-from worker.automation.base import AIProvider, AIResult, GenerationTimeoutError, LoginExpiredError
+from worker.automation.docs import build_context_block
 
 logger = get_logger("worker")
 
+API_PROVIDERS = ("openai", "anthropic", "gemini")
 
-def build_provider() -> AIProvider:
-    settings = get_settings()
-    if settings.ai_provider == "api":
+
+def build_provider(name: str) -> AIProvider:
+    if name == "openai":
         from worker.automation.openai_api import OpenAIAPIProvider
 
         return OpenAIAPIProvider()
-    from worker.automation.chatgpt import ChatGPTProvider
+    if name == "anthropic":
+        from worker.automation.anthropic_api import AnthropicProvider
 
-    return ChatGPTProvider()
+        return AnthropicProvider()
+    if name == "gemini":
+        from worker.automation.gemini_api import GeminiProvider
+
+        return GeminiProvider()
+    if name in ("browser", "api", ""):  # "api" kept for backwards compatibility
+        if name == "api":
+            from worker.automation.openai_api import OpenAIAPIProvider
+
+            return OpenAIAPIProvider()
+        from worker.automation.chatgpt import ChatGPTProvider
+
+        return ChatGPTProvider()
+    raise RuntimeError(f"unknown AI provider '{name}'")
+
+
+class ProviderPool:
+    """Lazily-constructed providers plus the configured failover order."""
+
+    def __init__(self) -> None:
+        self.settings = get_settings()
+        self._instances: dict[str, AIProvider] = {}
+
+    def default_chain(self) -> list[str]:
+        chain = [self.settings.ai_provider]
+        for name in (self.settings.ai_failover_chain or "").split(","):
+            name = name.strip()
+            if name and name not in chain:
+                chain.append(name)
+        return chain
+
+    def chain_for(self, requested: str) -> list[str]:
+        """Provider order for one job: explicit request first, then failover."""
+        if requested and requested != self.settings.ai_provider:
+            return [requested] + [p for p in self.default_chain() if p != requested]
+        return self.default_chain()
+
+    def get(self, name: str) -> AIProvider:
+        key = name or self.settings.ai_provider
+        if key not in self._instances:
+            self._instances[key] = build_provider(key)
+        return self._instances[key]
+
+    async def stop_all(self) -> None:
+        for provider in self._instances.values():
+            try:
+                await provider.stop()
+            except Exception:
+                pass
+
+    async def restart(self, name: str) -> None:
+        provider = self._instances.pop(name, None)
+        if provider is not None:
+            try:
+                await provider.stop()
+            except Exception:
+                pass
 
 
 class Worker:
     def __init__(self) -> None:
         self.settings = get_settings()
+        self.worker_id = (
+            self.settings.worker_id
+            or f"{socket.gethostname()}-{os.getpid()}"
+        )
         self.queue = QueueService()
-        self.storage = StorageService()
-        self.provider = build_provider()
+        self.pool = ProviderPool()
         self.stopping = asyncio.Event()
+        self.current_job: str | None = None
 
     # ---------- status ----------
 
     async def _heartbeat_loop(self) -> None:
-        redis = get_redis()
         while not self.stopping.is_set():
             try:
-                await redis.set(HEARTBEAT_KEY, datetime.now(timezone.utc).isoformat(), ex=15)
-                healthy = await self.provider.healthy()
-                await redis.set(CHROME_STATUS_KEY, "connected" if healthy else "disconnected",
-                                ex=15)
+                primary = self.pool.get(self.settings.ai_provider)
+                healthy = await primary.healthy()
+                await self.queue.register_heartbeat(
+                    self.worker_id,
+                    provider=self.settings.ai_provider,
+                    chrome="connected" if healthy else "disconnected",
+                    current_job=self.current_job,
+                )
             except Exception as exc:
                 logger.warning("heartbeat failed: %s", exc)
             await asyncio.sleep(5)
 
-    # ---------- job processing ----------
+    # ---------- helpers ----------
 
-    async def _save_result(self, db, prompt: Prompt, result: AIResult) -> None:
+    async def _admin_settings(self, db) -> AdminSettings:
+        """Runtime settings from the admin panel (DB) merged over env."""
+        try:
+            from app.services.app_settings import AppSettingsService
+
+            return await AppSettingsService(db).effective()
+        except Exception:
+            return AdminSettings(
+                job_retry_count=self.settings.job_retry_count,
+                job_timeout_seconds=self.settings.job_timeout_seconds,
+                response_timeout_seconds=self.settings.response_timeout_seconds,
+                delete_conversations_after_run=self.settings.delete_conversations_after_run,
+            )
+
+    async def _claim_terminal(self, db, prompt_id: str, values: dict) -> bool:
+        """Atomically move a prompt out of `processing`. Returns False when
+        someone else (a cancellation) changed the status first."""
+        result = await db.execute(
+            sql_update(Prompt)
+            .where(Prompt.id == prompt_id, Prompt.status == PromptStatus.processing)
+            .values(**values)
+        )
+        return result.rowcount == 1
+
+    async def _publish_safe(self, event_type: str, data: dict, user_id: int | None) -> None:
+        try:
+            await events.publish(event_type, data, user_id=user_id)
+        except Exception as exc:
+            logger.warning("event publish failed (non-fatal): %s", exc)
+
+    def _save_result_files(self, db, prompt: Prompt, result: AIResult) -> None:
+        from app.services.storage import StorageService, guess_mime, is_image
+
+        storage = StorageService()
         for filename, data in result.images:
-            rel, size = self.storage.save_bytes("results", prompt.id, filename, data)
-            thumb = self.storage.make_thumbnail(rel)
+            rel, size = storage.save_bytes("results", prompt.id, filename, data)
+            thumb = storage.make_thumbnail(rel)
             db.add(PromptFile(
                 prompt_id=prompt.id, kind=FileKind.result_image, filename=filename,
                 rel_path=rel, thumb_rel_path=thumb, mime_type=guess_mime(filename),
                 size_bytes=size,
             ))
         for filename, data in result.files:
-            rel, size = self.storage.save_bytes("results", prompt.id, filename, data)
+            rel, size = storage.save_bytes("results", prompt.id, filename, data)
             kind = FileKind.result_image if is_image(filename) else FileKind.result_file
-            thumb = self.storage.make_thumbnail(rel) if kind == FileKind.result_image else None
+            thumb = storage.make_thumbnail(rel) if kind == FileKind.result_image else None
             db.add(PromptFile(
                 prompt_id=prompt.id, kind=kind, filename=filename, rel_path=rel,
                 thumb_rel_path=thumb, mime_type=guess_mime(filename), size_bytes=size,
             ))
 
-    async def _process(self, prompt_id: str) -> None:
-        redis = get_redis()
-        await redis.set(CURRENT_JOB_KEY, prompt_id, ex=self.settings.job_timeout_seconds + 60)
-        async with async_session_factory() as db:
-            prompt = await db.get(Prompt, prompt_id)
-            if prompt is None:
-                logger.warning("queued prompt %s not found in DB", prompt_id)
-                return
-            if prompt.status != PromptStatus.waiting:
-                logger.info("skipping prompt %s in status %s", prompt_id, prompt.status)
-                return
-            if await self.queue.is_cancelled(prompt_id):
-                prompt.status = PromptStatus.cancelled
-                prompt.completed_at = datetime.now(timezone.utc)
-                await db.commit()
-                return
+    # ---------- job processing ----------
 
-            prompt.status = PromptStatus.processing
-            prompt.started_at = datetime.now(timezone.utc)
-            await audit(db, "prompt.started", f"prompt {prompt.id} started",
-                        user_id=prompt.user_id, meta={"prompt_id": prompt.id})
-            await db.commit()
-            await events.publish(events.PROMPT_PROCESSING, {"prompt_id": prompt.id},
-                                 user_id=prompt.user_id)
-            if prompt.wants_image:
-                await events.publish(events.PROMPT_GENERATING_IMAGE,
-                                     {"prompt_id": prompt.id}, user_id=prompt.user_id)
-
-            upload_paths: list[Path] = [
-                self.storage.abs_path(f.rel_path)
-                for f in prompt.files
-                if f.kind == FileKind.upload and self.storage.abs_path(f.rel_path).exists()
-            ]
-
+    async def _run_with_failover(
+        self, prompt: Prompt, upload_paths: list[Path], admin: AdminSettings
+    ) -> tuple[AIResult, str]:
+        """Try providers in order; return (result, provider_name)."""
+        chain = self.pool.chain_for(prompt.provider)
+        last_error: Exception | None = None
+        for name in chain:
             try:
+                provider = self.pool.get(name)
+            except RuntimeError as exc:  # not configured (missing API key etc.)
+                logger.info("provider %s unavailable: %s", name, exc)
+                last_error = exc
+                continue
+            try:
+                await provider.start()
+                if hasattr(provider, "delete_conversations"):
+                    provider.delete_conversations = admin.delete_conversations_after_run
+                prompt_text = prompt.prompt_text
+                if name in API_PROVIDERS and upload_paths and self.settings.enable_doc_extraction:
+                    # API providers that accept files natively still benefit from
+                    # plain-text context for formats they can't ingest
+                    context = build_context_block(
+                        [p for p in upload_paths
+                         if p.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp",
+                                                     ".gif", ".pdf")]
+                    )
+                    prompt_text = context + prompt_text
                 result = await asyncio.wait_for(
-                    self.provider.run_prompt(
-                        prompt.prompt_text,
+                    provider.run_prompt(
+                        prompt_text,
                         upload_paths,
                         prompt.wants_image,
-                        self.settings.response_timeout_seconds,
+                        admin.response_timeout_seconds,
                     ),
-                    timeout=self.settings.job_timeout_seconds,
+                    timeout=admin.job_timeout_seconds,
                 )
-                await events.publish(events.PROMPT_DOWNLOADING, {"prompt_id": prompt.id},
-                                     user_id=prompt.user_id)
-                await self._save_result(db, prompt, result)
-                prompt.response_text = result.text
-                prompt.status = PromptStatus.completed
-                prompt.completed_at = datetime.now(timezone.utc)
+                return result, name
+            except Exception as exc:
+                logger.warning("provider %s failed for prompt %s: %s", name, prompt.id, exc)
+                last_error = exc
+                if isinstance(exc, LoginExpiredError):
+                    with contextlib_suppress():
+                        await events.publish(events.WORKER_STATUS,
+                                             {"error": "login_expired", "message": str(exc)},
+                                             admin_only=True)
+                if name == "browser":
+                    await self.pool.restart(name)
+                if len(chain) > 1:
+                    continue
+                raise
+        raise last_error or RuntimeError("no AI provider is configured")
+
+    async def _process(self, prompt_id: str) -> None:
+        self.current_job = prompt_id
+        try:
+            async with async_session_factory() as db:
+                prompt = await db.get(Prompt, prompt_id)
+                if prompt is None:
+                    logger.warning("queued prompt %s not found in DB", prompt_id)
+                    return
+                if prompt.status != PromptStatus.waiting:
+                    logger.info("skipping prompt %s in status %s", prompt_id, prompt.status)
+                    return
+                if await self.queue.is_cancelled(prompt_id):
+                    prompt.status = PromptStatus.cancelled
+                    prompt.completed_at = datetime.now(timezone.utc)
+                    await db.commit()
+                    return
+
+                admin = await self._admin_settings(db)
+
+                prompt.status = PromptStatus.processing
+                prompt.started_at = datetime.now(timezone.utc)
+                await audit(db, "prompt.started", f"prompt {prompt.id} started",
+                            user_id=prompt.user_id, meta={"prompt_id": prompt.id,
+                                                          "worker": self.worker_id})
+                await db.commit()
+                await self._publish_safe(events.PROMPT_PROCESSING,
+                                         {"prompt_id": prompt.id}, prompt.user_id)
+                if prompt.wants_image:
+                    await self._publish_safe(events.PROMPT_GENERATING_IMAGE,
+                                             {"prompt_id": prompt.id}, prompt.user_id)
+
+                from app.services.storage import StorageService
+
+                storage = StorageService()
+                upload_paths: list[Path] = [
+                    storage.abs_path(f.rel_path)
+                    for f in prompt.files
+                    if f.kind == FileKind.upload and storage.abs_path(f.rel_path).exists()
+                ]
+
+                try:
+                    result, provider_name = await self._run_with_failover(
+                        prompt, upload_paths, admin)
+                except Exception as exc:
+                    await self._handle_failure(db, prompt, exc, admin)
+                    return
+
+                await self._publish_safe(events.PROMPT_DOWNLOADING,
+                                         {"prompt_id": prompt.id}, prompt.user_id)
+
+                input_tokens = result.input_tokens or estimate_tokens(prompt.prompt_text)
+                output_tokens = result.output_tokens or estimate_tokens(result.text)
+                claimed = await self._claim_terminal(db, prompt.id, {
+                    "status": PromptStatus.completed,
+                    "response_text": result.text,
+                    "provider": provider_name,
+                    "model": result.model,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "cost_usd": estimate_cost(result.model, input_tokens, output_tokens,
+                                              images=len(result.images)),
+                    "completed_at": datetime.now(timezone.utc),
+                })
+                if not claimed:
+                    # the API cancelled this prompt mid-run — honour it
+                    await db.rollback()
+                    await self.queue.clear_cancel_flag(prompt.id)
+                    await audit(db, "prompt.cancel_honoured",
+                                f"prompt {prompt.id} was cancelled mid-run; result discarded",
+                                user_id=prompt.user_id, level="warning",
+                                meta={"prompt_id": prompt.id}, commit=True)
+                    return
+
+                self._save_result_files(db, prompt, result)
                 await audit(db, "prompt.completed",
-                            f"prompt {prompt.id} completed "
+                            f"prompt {prompt.id} completed via {provider_name} "
                             f"({len(result.images)} images, {len(result.files)} files)",
                             user_id=prompt.user_id, meta={"prompt_id": prompt.id})
+                if prompt.user:
+                    await NotificationService(db).notify(
+                        prompt.user, "success", "Prompt completed",
+                        f"Your prompt \"{prompt.prompt_text[:80]}\" finished"
+                        + (f" with {len(result.images)} image(s)" if result.images else ""),
+                        meta={"prompt_id": prompt.id},
+                    )
                 await db.commit()
-                await events.publish(
+                # post-commit: purely informational, must never fail the job
+                await self._publish_safe(
                     events.PROMPT_COMPLETED,
                     {"prompt_id": prompt.id,
                      "images": len(result.images), "files": len(result.files)},
-                    user_id=prompt.user_id,
+                    prompt.user_id,
                 )
-            except Exception as exc:
-                await self._handle_failure(db, prompt, exc)
-        await redis.delete(CURRENT_JOB_KEY)
+        finally:
+            self.current_job = None
 
-    async def _handle_failure(self, db, prompt: Prompt, exc: Exception) -> None:
+    async def _handle_failure(
+        self, db, prompt: Prompt, exc: Exception, admin: AdminSettings
+    ) -> None:
         retryable = not isinstance(exc, LoginExpiredError)
         error_msg = f"{type(exc).__name__}: {exc}"
         logger.error("prompt %s failed: %s", prompt.id, error_msg)
@@ -159,55 +359,62 @@ class Worker:
         if isinstance(exc, (GenerationTimeoutError, asyncio.TimeoutError)):
             error_msg = "The AI did not finish in time. The job can be retried."
 
-        if retryable and prompt.retry_count < self.settings.job_retry_count:
-            prompt.retry_count += 1
-            prompt.status = PromptStatus.waiting
-            prompt.error = error_msg
+        await db.rollback()  # discard any partial state from the failed run
+
+        if retryable and prompt.retry_count < admin.job_retry_count:
+            claimed = await self._claim_terminal(db, prompt.id, {
+                "status": PromptStatus.waiting,
+                "retry_count": prompt.retry_count + 1,
+                "error": error_msg,
+            })
+            if not claimed:  # cancelled mid-run — do not resurrect it
+                await db.rollback()
+                await self.queue.clear_cancel_flag(prompt.id)
+                return
             await audit(db, "prompt.retry",
-                        f"prompt {prompt.id} auto-retry {prompt.retry_count}",
+                        f"prompt {prompt.id} auto-retry {prompt.retry_count + 1}",
                         user_id=prompt.user_id, level="warning",
                         meta={"prompt_id": prompt.id, "error": error_msg})
             await db.commit()
+            await self.queue.clear_cancel_flag(prompt.id)
             await self.queue.enqueue(prompt.id, prompt.priority)
-            # reset the browser between retries — cheap insurance
-            await self._restart_provider()
             return
 
-        prompt.status = PromptStatus.failed
-        prompt.error = error_msg
-        prompt.completed_at = datetime.now(timezone.utc)
+        claimed = await self._claim_terminal(db, prompt.id, {
+            "status": PromptStatus.failed,
+            "error": error_msg,
+            "completed_at": datetime.now(timezone.utc),
+        })
+        if not claimed:  # already cancelled — nothing more to record
+            await db.rollback()
+            await self.queue.clear_cancel_flag(prompt.id)
+            return
         await audit(db, "prompt.failed", f"prompt {prompt.id} failed: {error_msg}",
                     user_id=prompt.user_id, level="error",
                     meta={"prompt_id": prompt.id})
+        if prompt.user:
+            await NotificationService(db).notify(
+                prompt.user, "error", "Prompt failed",
+                f"Your prompt \"{prompt.prompt_text[:80]}\" failed: {error_msg[:200]}",
+                meta={"prompt_id": prompt.id},
+            )
         await db.commit()
-        await events.publish(events.PROMPT_FAILED,
-                             {"prompt_id": prompt.id, "error": error_msg},
-                             user_id=prompt.user_id)
-        if isinstance(exc, LoginExpiredError):
-            await events.publish(events.WORKER_STATUS,
-                                 {"error": "login_expired", "message": str(exc)},
-                                 admin_only=True)
-
-    async def _restart_provider(self) -> None:
-        try:
-            await self.provider.stop()
-        except Exception:
-            pass
-        try:
-            await self.provider.start()
-        except Exception as exc:
-            logger.error("provider restart failed: %s", exc)
+        await self._publish_safe(events.PROMPT_FAILED,
+                                 {"prompt_id": prompt.id, "error": error_msg},
+                                 prompt.user_id)
 
     # ---------- main loop ----------
 
     async def run(self) -> None:
         setup_logging()
         await init_db()
-        logger.info("worker starting (provider=%s)", self.settings.ai_provider)
+        logger.info("worker %s starting (provider=%s, failover=%s)",
+                    self.worker_id, self.settings.ai_provider,
+                    self.settings.ai_failover_chain or "off")
         try:
-            await self.provider.start()
+            await self.pool.get(self.settings.ai_provider).start()
         except Exception as exc:
-            logger.error("provider start failed (will keep retrying): %s", exc)
+            logger.error("primary provider start failed (will keep retrying): %s", exc)
 
         heartbeat = asyncio.create_task(self._heartbeat_loop())
         try:
@@ -216,8 +423,6 @@ class Worker:
                     prompt_id = await self.queue.pop_blocking(timeout=5)
                     if prompt_id is None:
                         continue
-                    if not await self.provider.healthy():
-                        await self._restart_provider()
                     await self._process(prompt_id)
                 except asyncio.CancelledError:
                     raise
@@ -227,12 +432,18 @@ class Worker:
         finally:
             self.stopping.set()
             heartbeat.cancel()
-            await self.provider.stop()
+            await self.pool.stop_all()
             await close_redis()
             logger.info("worker stopped")
 
     def request_stop(self) -> None:
         self.stopping.set()
+
+
+def contextlib_suppress():
+    import contextlib
+
+    return contextlib.suppress(Exception)
 
 
 def main() -> None:

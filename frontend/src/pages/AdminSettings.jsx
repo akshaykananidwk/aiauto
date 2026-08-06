@@ -11,6 +11,8 @@ const FIELDS = [
   ['download_dir', 'Download directory', 'text'],
   ['browser_profile_path', 'Browser profile path', 'text'],
   ['backup_keep_count', 'Backups to keep', 'number'],
+  ['default_daily_limit', 'Default daily prompt limit (0 = unlimited)', 'number'],
+  ['default_monthly_limit', 'Default monthly prompt limit (0 = unlimited)', 'number'],
 ]
 
 export default function AdminSettings() {
@@ -58,6 +60,9 @@ export default function AdminSettings() {
             </select>
           </div>
         </div>
+        <label>Announcement banner (shown to everyone; empty = hidden)</label>
+        <textarea style={{ minHeight: 60 }} value={settings.announcement || ''}
+          onChange={e => setSettings(s => ({ ...s, announcement: e.target.value }))} />
         <div style={{ marginTop: 20 }}><button className="btn">Save Settings</button></div>
       </form>
     </div>

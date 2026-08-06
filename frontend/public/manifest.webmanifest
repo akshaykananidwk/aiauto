@@ -1,0 +1,12 @@
+{
+  "name": "AIAuto — Office AI Platform",
+  "short_name": "AIAuto",
+  "description": "Central AI automation platform for your office",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0f1218",
+  "theme_color": "#171c26",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

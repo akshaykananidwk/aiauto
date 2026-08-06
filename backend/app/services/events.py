@@ -49,3 +49,10 @@ async def publish(
         "data": data or {},
     }
     await get_redis().publish(CHANNEL, json.dumps(payload, default=str))
+    # plugin hooks run in the publishing process, best-effort
+    try:
+        from app.services.plugins import hooks
+
+        await hooks.dispatch(event_type, payload)
+    except Exception:
+        pass

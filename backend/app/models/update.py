@@ -3,10 +3,10 @@ from __future__ import annotations
 import enum
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, String, Text
+from sqlalchemy import Enum, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import Base, TimestampMixin
+from app.db.base import Base, TimestampMixin, TZDateTime
 
 
 class UpdateStatus(str, enum.Enum):
@@ -28,4 +28,4 @@ class UpdateRecord(TimestampMixin, Base):
     )
     log: Mapped[str] = mapped_column(Text, default="", nullable=False)
     backup_path: Mapped[str] = mapped_column(String(512), default="", nullable=False)
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)

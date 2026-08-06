@@ -44,6 +44,32 @@ export default function AdminUsers() {
     catch (err) { setError(err.message) }
   }
 
+  const [limitsFor, setLimitsFor] = useState(null)
+  const [limits, setLimits] = useState({ daily_limit: '', monthly_limit: '', telegram_chat_id: '' })
+
+  const openLimits = (u) => {
+    setLimitsFor(u.id)
+    setLimits({
+      daily_limit: u.daily_limit ?? '',
+      monthly_limit: u.monthly_limit ?? '',
+      telegram_chat_id: u.telegram_chat_id ?? '',
+    })
+  }
+
+  const saveLimits = async (e) => {
+    e.preventDefault()
+    try {
+      const body = {}
+      if (limits.daily_limit !== '') body.daily_limit = Number(limits.daily_limit)
+      if (limits.monthly_limit !== '') body.monthly_limit = Number(limits.monthly_limit)
+      if (limits.telegram_chat_id !== '') body.telegram_chat_id = limits.telegram_chat_id
+      await api(`/users/${limitsFor}`, { method: 'PATCH', body })
+      setLimitsFor(null)
+      setNotice('User limits updated')
+      load()
+    } catch (err) { setError(err.message) }
+  }
+
   return (
     <div>
       <h1>Users</h1>
@@ -80,6 +106,7 @@ export default function AdminUsers() {
                 <td><span className={`badge ${u.is_active ? 'online' : 'offline'}`}>{u.is_active ? 'active' : 'disabled'}</span></td>
                 <td className="muted">{u.last_login_at ? new Date(u.last_login_at).toLocaleString() : 'never'}</td>
                 <td className="row">
+                  <button className="btn secondary sm" onClick={() => openLimits(u)}>Limits</button>
                   <button className="btn secondary sm" onClick={() => resetPassword(u)}>Reset PW</button>
                   <button className={`btn sm ${u.is_active ? 'danger' : ''}`} onClick={() => toggleActive(u)}>
                     {u.is_active ? 'Disable' : 'Enable'}
@@ -89,6 +116,27 @@ export default function AdminUsers() {
             ))}
           </tbody>
         </table>
+
+        {limitsFor && (
+          <form className="card" style={{ marginTop: 16 }} onSubmit={saveLimits}>
+            <h2>Quotas &amp; notifications for user #{limitsFor}</h2>
+            <div className="grid cols-4">
+              <div><label>Daily limit (0 = unlimited)</label>
+                <input type="number" min="0" value={limits.daily_limit}
+                  onChange={e => setLimits(l => ({ ...l, daily_limit: e.target.value }))} /></div>
+              <div><label>Monthly limit (0 = unlimited)</label>
+                <input type="number" min="0" value={limits.monthly_limit}
+                  onChange={e => setLimits(l => ({ ...l, monthly_limit: e.target.value }))} /></div>
+              <div><label>Telegram chat ID</label>
+                <input value={limits.telegram_chat_id}
+                  onChange={e => setLimits(l => ({ ...l, telegram_chat_id: e.target.value }))} /></div>
+              <div style={{ alignSelf: 'end' }} className="row">
+                <button className="btn">Save</button>
+                <button type="button" className="btn ghost" onClick={() => setLimitsFor(null)}>Cancel</button>
+              </div>
+            </div>
+          </form>
+        )}
       </div>
     </div>
   )

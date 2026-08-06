@@ -28,6 +28,7 @@ class DashboardService:
         usage = await self.prompts.usage_counts()
         files = await self.prompts.file_counts()
         worker = await self.queue.worker_status()
+        storage_used = await StorageService().used_bytes_cached()
         return AdminDashboard(
             queue=QueueStats(**status_counts),
             usage=UsageStats(**usage),
@@ -35,7 +36,7 @@ class DashboardService:
             total_prompts=await self.prompts.total(),
             image_count=files["images"],
             file_count=files["files"],
-            storage_used_mb=round(StorageService().used_bytes() / 1024 / 1024, 1),
+            storage_used_mb=round(storage_used / 1024 / 1024, 1),
             worker=WorkerStatus(
                 worker_online=worker["worker_online"],
                 chrome_connected=worker["chrome_connected"],

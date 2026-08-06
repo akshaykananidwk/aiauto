@@ -26,6 +26,9 @@ class UserUpdate(BaseModel):
     role: UserRole | None = None
     is_active: bool | None = None
     password: str | None = Field(default=None, min_length=8, max_length=128)
+    daily_limit: int | None = Field(default=None, ge=0, le=1_000_000)
+    monthly_limit: int | None = Field(default=None, ge=0, le=10_000_000)
+    telegram_chat_id: str | None = Field(default=None, max_length=64)
 
 
 class UserOut(UserBase):
@@ -35,3 +38,6 @@ class UserOut(UserBase):
     is_active: bool
     created_at: datetime
     last_login_at: datetime | None = None
+    daily_limit: int | None = None
+    monthly_limit: int | None = None
+    telegram_chat_id: str | None = None

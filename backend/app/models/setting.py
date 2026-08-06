@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, String
+from sqlalchemy import JSON, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import Base, utcnow
+from app.db.base import Base, TZDateTime, utcnow
 
 
 class AppSetting(Base):
@@ -18,5 +18,5 @@ class AppSetting(Base):
         JSON, nullable=True
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+        TZDateTime, default=utcnow, onupdate=utcnow, nullable=False
     )

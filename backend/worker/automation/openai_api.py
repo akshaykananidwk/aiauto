@@ -16,6 +16,8 @@ logger = get_logger("worker.openai_api")
 
 
 class OpenAIAPIProvider:
+    name = "openai"
+
     def __init__(self) -> None:
         self.settings = get_settings()
         if not self.settings.openai_api_key:
@@ -44,7 +46,8 @@ class OpenAIAPIProvider:
         wants_image: bool,
         timeout_seconds: int,
     ) -> AIResult:
-        result = AIResult()
+        result = AIResult(model=self.settings.openai_image_model if wants_image
+                          else self.settings.openai_text_model)
         async with self._client(timeout_seconds) as client:
             if wants_image:
                 r = await client.post(
@@ -78,5 +81,9 @@ class OpenAIAPIProvider:
                           "messages": [{"role": "user", "content": content}]},
                 )
                 r.raise_for_status()
-                result.text = r.json()["choices"][0]["message"]["content"]
+                data = r.json()
+                result.text = data["choices"][0]["message"]["content"]
+                usage = data.get("usage", {})
+                result.input_tokens = int(usage.get("prompt_tokens", 0))
+                result.output_tokens = int(usage.get("completion_tokens", 0))
         return result

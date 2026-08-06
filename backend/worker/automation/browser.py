@@ -26,6 +26,13 @@ class BrowserManager:
         self.attached_over_cdp = False
 
     async def start(self) -> BrowserContext:
+        # idempotent: called before every job — reuse a live connection
+        # instead of leaking a Playwright driver per job
+        if self._context is not None:
+            if await self.is_connected():
+                return self._context
+            await self.stop()  # stale connection — clean up before reconnecting
+
         self._pw = await async_playwright().start()
 
         # 1) attach to the running, logged-in Chrome

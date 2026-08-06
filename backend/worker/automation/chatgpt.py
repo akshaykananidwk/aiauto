@@ -42,9 +42,13 @@ async def find_first(page: Page, candidates: list[str], timeout_ms: int = 5000) 
 
 
 class ChatGPTProvider:
+    name = "browser"
+
     def __init__(self) -> None:
         self.settings = get_settings()
         self.browser = BrowserManager()
+        # runtime-overridable from admin settings (worker sets this per job)
+        self.delete_conversations = self.settings.delete_conversations_after_run
 
     async def start(self) -> None:
         await self.browser.start()
@@ -117,8 +121,20 @@ class ChatGPTProvider:
         else:
             await send.click()
 
-    async def _wait_for_completion(self, page: Page, timeout_seconds: int) -> None:
-        """Done when the stop button is gone and the last message stops growing."""
+    async def _assistant_count(self, page: Page) -> int:
+        for css in sel.ASSISTANT_MESSAGE:
+            count = await page.locator(css).count()
+            if count > 0:
+                return count
+        return 0
+
+    async def _wait_for_completion(
+        self, page: Page, timeout_seconds: int, baseline_count: int
+    ) -> None:
+        """Done when a NEW assistant message exists (count above the
+        pre-send baseline), the stop button is gone, and the message text
+        has stopped growing. The baseline check prevents capturing a stale
+        answer from an earlier conversation as this prompt's result."""
         loop = asyncio.get_event_loop()
         deadline = loop.time() + timeout_seconds
         # allow generation to actually start
@@ -126,6 +142,9 @@ class ChatGPTProvider:
         last_len = -1
         stable_ticks = 0
         while loop.time() < deadline:
+            if await self._assistant_count(page) <= baseline_count:
+                await asyncio.sleep(1.0)
+                continue  # our reply has not appeared yet
             stop_visible = False
             for css in sel.STOP_BUTTON:
                 try:
@@ -240,14 +259,21 @@ class ChatGPTProvider:
         page = await self._ensure_ready()
         await self._new_chat(page)
         await self._attach_files(page, upload_paths)
+        baseline = await self._assistant_count(page)
         await self._type_and_send(page, prompt_text)
-        await self._wait_for_completion(page, timeout_seconds)
+        await self._wait_for_completion(page, timeout_seconds, baseline)
 
         text = await self._last_message_text(page)
         images = await self._collect_images(page)
         files = await self._collect_files(page)
 
-        if self.settings.delete_conversations_after_run:
+        if self.delete_conversations:
             await self._delete_conversation(page)
 
-        return AIResult(text=text, images=images, files=files)
+        from app.services.costs import estimate_tokens
+
+        return AIResult(
+            text=text, images=images, files=files, model="chatgpt-web",
+            input_tokens=estimate_tokens(prompt_text),
+            output_tokens=estimate_tokens(text),
+        )

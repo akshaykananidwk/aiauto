@@ -6,17 +6,22 @@ no manual file upload is ever needed again:
   * "Check for Update"  → queries the GitHub API and reports the new
     version, commit messages, authors and dates.
   * "Update Now"        → full pipeline:
-        1. take an automatic backup (code zip + optional pg_dump)
+        1. take an automatic backup (code zip + database backup)
         2. download the branch tarball from GitHub
         3. safely extract and copy files over the installation,
            NEVER touching protected paths (.env, config.php, uploads/,
-           storage/, backups/, ...)
-        4. run database migrations (alembic upgrade head)
-        5. clear the Redis cache
-        6. record the new commit — and on ANY error, automatically
-           roll back the files from the backup.
+           storage/, backups/, plugins/, ...)
+        4. install changed Python dependencies (pip) and rebuild the
+           frontend when its sources changed
+        5. run database migrations (alembic upgrade head)
+        6. clear the Redis cache (best-effort)
+        7. record the new commit — and on ANY error, automatically
+           roll back: database migrations are downgraded to the
+           pre-update revision, then files are restored from the backup.
 
-Progress is streamed over the WebSocket event bus (update.progress).
+Blocking work (zip, pg_dump, extract, pip, npm, alembic) runs in worker
+threads so the API stays responsive during an update. Progress is
+streamed over the WebSocket event bus (update.progress).
 """
 from __future__ import annotations
 
@@ -25,9 +30,11 @@ import io
 import os
 import shutil
 import subprocess
+import sys
 import tarfile
 import zipfile
 from datetime import datetime, timezone
+from hashlib import sha256
 from pathlib import Path
 
 import httpx
@@ -96,6 +103,10 @@ def safe_extract_tar(data: bytes, dest: Path) -> Path:
     return roots[0]
 
 
+def _file_hash(path: Path) -> str:
+    return sha256(path.read_bytes()).hexdigest() if path.exists() else ""
+
+
 class UpdateService:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -139,7 +150,7 @@ class UpdateService:
             await self.settings_repo.set(KEY_TOKEN, encrypt_secret(token))
         if protected_paths is not None:
             # never allow removing the critical entries
-            required = {".env", "storage", "backups", "uploads", "config.php"}
+            required = {".env", "storage", "backups", "uploads", "config.php", "plugins"}
             merged = sorted(required | {p.strip().strip("/") for p in protected_paths if p.strip()})
             await self.settings_repo.set(KEY_PROTECTED, merged)
         if auto_restart is not None:
@@ -220,7 +231,7 @@ class UpdateService:
             "commits": commits,
         }
 
-    # ---------------- update pipeline ----------------
+    # ---------------- update pipeline helpers ----------------
 
     async def _progress(self, step: str, progress: int, message: str) -> None:
         _run_state.update({"step": step, "progress": progress})
@@ -240,7 +251,8 @@ class UpdateService:
         backup_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         zip_path = backup_dir / f"backup_{stamp}.zip"
-        skip_always = {".git", "backups", "frontend/node_modules", "logs"}
+        skip_always = {".git", "backups", "frontend/node_modules", "frontend/dist", "logs",
+                       "backend/.venv"}
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
             for path in ROOT_DIR.rglob("*"):
                 if not path.is_file():
@@ -254,13 +266,26 @@ class UpdateService:
         return zip_path
 
     def _backup_database(self, backup_dir: Path) -> Path | None:
-        """Best-effort pg_dump; returns dump path or None (e.g. SQLite / no pg_dump)."""
+        """Database backup before migrating.
+
+        SQLite: copy the database file (failure is FATAL — aborts the update).
+        PostgreSQL: pg_dump when available (failure is FATAL; a missing
+        pg_dump binary only logs a warning so container deployments that
+        dump externally still work)."""
         url = self.app_settings.database_url
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        if url.startswith("sqlite"):
+            db_file = Path(url.split("///", 1)[-1])
+            if db_file.exists():
+                dump_path = backup_dir / f"db_{stamp}.sqlite"
+                shutil.copy2(db_file, dump_path)
+                return dump_path
+            return None
         if not url.startswith("postgresql"):
             return None
         if shutil.which("pg_dump") is None:
+            logger.warning("pg_dump not found — continuing WITHOUT a database backup")
             return None
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         dump_path = backup_dir / f"db_{stamp}.sql"
         dsn = url.replace("+asyncpg", "")
         try:
@@ -268,9 +293,8 @@ class UpdateService:
                 subprocess.run(["pg_dump", "--dbname", dsn], stdout=fh, check=True, timeout=600)
             return dump_path
         except Exception as exc:
-            logger.warning("pg_dump failed (continuing without DB dump): %s", exc)
             dump_path.unlink(missing_ok=True)
-            return None
+            raise RuntimeError(f"database backup (pg_dump) failed: {exc}") from exc
 
     def _apply_files(self, src_root: Path, protected: list[str]) -> int:
         """Copy new files over the installation, skipping protected paths."""
@@ -302,10 +326,9 @@ class UpdateService:
                 restored += 1
         return restored
 
-    def _run_migrations(self) -> str:
-        """alembic upgrade head, executed in the backend directory."""
+    def _run_alembic(self, *args: str) -> str:
         result = subprocess.run(
-            ["alembic", "upgrade", "head"],
+            [sys.executable, "-m", "alembic", *args],
             cwd=BACKEND_DIR,
             capture_output=True,
             text=True,
@@ -313,19 +336,83 @@ class UpdateService:
         )
         output = (result.stdout or "") + (result.stderr or "")
         if result.returncode != 0:
-            raise RuntimeError(f"database migration failed:\n{output[-2000:]}")
+            raise RuntimeError(f"alembic {' '.join(args)} failed:\n{output[-2000:]}")
         return output
 
-    def _prune_backups(self, backup_dir: Path, keep: int = 10) -> None:
-        backups = sorted(backup_dir.glob("backup_*.zip"), reverse=True)
-        for old in backups[keep:]:
-            old.unlink(missing_ok=True)
+    def _alembic_current(self) -> str:
+        """Current DB revision (empty when unversioned)."""
+        try:
+            output = self._run_alembic("current")
+            for line in output.splitlines():
+                line = line.strip()
+                if line and not line.startswith(("INFO", "WARN")):
+                    return line.split(" ")[0]
+        except Exception as exc:
+            logger.warning("could not read current alembic revision: %s", exc)
+        return ""
+
+    def _install_python_deps(self) -> str:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-r", "requirements.txt"],
+            cwd=BACKEND_DIR, capture_output=True, text=True, timeout=1500,
+        )
+        output = (result.stdout or "") + (result.stderr or "")
+        if result.returncode != 0:
+            raise RuntimeError(f"pip install failed:\n{output[-2000:]}")
+        return output
+
+    def _rebuild_frontend(self) -> str | None:
+        """npm install + build when npm is available; None when it isn't
+        (e.g. the Docker backend container — its frontend image is built
+        separately)."""
+        npm = shutil.which("npm")
+        frontend = ROOT_DIR / "frontend"
+        if npm is None or not frontend.is_dir():
+            return None
+        for args in (["install", "--no-audit", "--no-fund"], ["run", "build"]):
+            result = subprocess.run([npm, *args], cwd=frontend,
+                                    capture_output=True, text=True, timeout=1500)
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"frontend build failed (npm {' '.join(args)}):\n"
+                    f"{(result.stdout or '') + (result.stderr or '')[-1500:]}"
+                )
+        return "frontend rebuilt"
+
+    async def _prune_backups(self, backup_dir: Path) -> None:
+        keep = 10
+        try:
+            from app.services.app_settings import AppSettingsService
+
+            keep = (await AppSettingsService(self.db).effective()).backup_keep_count
+        except Exception:
+            pass
+        for pattern in ("backup_*.zip", "db_*.sql", "db_*.sqlite"):
+            for old in sorted(backup_dir.glob(pattern), reverse=True)[keep:]:
+                old.unlink(missing_ok=True)
+
+    def _assert_sane_root(self) -> None:
+        """Refuse to run against a mislaid installation — updating from
+        ROOT_DIR='/' would back up and overwrite the wrong tree."""
+        if str(ROOT_DIR) in ("/", ""):
+            raise RuntimeError(
+                "updater refused: repository root resolves to '/' — set AIAUTO_ROOT "
+                "to the installation directory (see docs/DEPLOYMENT.md)"
+            )
+        if not (ROOT_DIR / "VERSION").exists() and not (ROOT_DIR / ".env.example").exists():
+            raise RuntimeError(
+                f"updater refused: {ROOT_DIR} does not look like an AIAuto installation "
+                "(no VERSION/.env.example marker) — set AIAUTO_ROOT correctly"
+            )
+
+    # ---------------- update pipeline ----------------
 
     async def run_update(self) -> UpdateRecord:
         if _run_state["running"]:
             raise RuntimeError("an update is already running")
         _run_state.update({"running": True, "step": "starting", "progress": 0, "log": []})
 
+        self._assert_sane_root()
         cfg = await self.get_config()
         record = UpdateRecord(from_commit=cfg["current_commit"], status=UpdateStatus.running)
         self.db.add(record)
@@ -334,6 +421,9 @@ class UpdateService:
 
         backup_zip: Path | None = None
         protected = cfg["protected_paths"]
+        pre_update_revision = ""
+        migrations_ran = False
+        deps_installed = False
         try:
             check = await self.check()
             if not check["update_available"]:
@@ -341,45 +431,67 @@ class UpdateService:
             target_sha = check["latest_commit"]
             record.to_commit = target_sha
 
-            await self._progress("backup", 10, "Creating automatic backup…")
-            backup_zip = self._backup_code(self.app_settings.backup_path, protected)
-            db_dump = self._backup_database(self.app_settings.backup_path)
+            await self._progress("backup", 8, "Creating automatic backup…")
+            backup_zip = await asyncio.to_thread(
+                self._backup_code, self.app_settings.backup_path, protected)
+            db_dump = await asyncio.to_thread(
+                self._backup_database, self.app_settings.backup_path)
             record.backup_path = str(backup_zip)
             await self._progress(
-                "backup", 25,
+                "backup", 20,
                 f"Backup ready: {backup_zip.name}" + (f" + {db_dump.name}" if db_dump else ""),
             )
 
-            await self._progress("download", 30, f"Downloading {cfg['repo']}@{target_sha[:10]}…")
+            await self._progress("download", 25, f"Downloading {cfg['repo']}@{target_sha[:10]}…")
             async with self._client(cfg["token"]) as client:
                 r = await client.get(f"/repos/{cfg['repo']}/tarball/{target_sha}")
                 r.raise_for_status()
                 tar_bytes = r.content
-            await self._progress("download", 50, f"Downloaded {len(tar_bytes) // 1024} KiB")
+            await self._progress("download", 40, f"Downloaded {len(tar_bytes) // 1024} KiB")
 
-            await self._progress("extract", 55, "Extracting and applying files…")
+            await self._progress("extract", 45, "Extracting and applying files…")
+            req_hash_before = _file_hash(BACKEND_DIR / "requirements.txt")
             tmp_dir = self.app_settings.backup_path / "_incoming"
             shutil.rmtree(tmp_dir, ignore_errors=True)
-            src_root = safe_extract_tar(tar_bytes, tmp_dir)
-            copied = self._apply_files(src_root, protected)
+            src_root = await asyncio.to_thread(safe_extract_tar, tar_bytes, tmp_dir)
+            copied = await asyncio.to_thread(self._apply_files, src_root, protected)
             shutil.rmtree(tmp_dir, ignore_errors=True)
-            await self._progress("apply", 70, f"Applied {copied} files (protected paths untouched)")
+            await self._progress("apply", 55, f"Applied {copied} files (protected paths untouched)")
 
-            await self._progress("migrate", 80, "Running database migrations…")
-            migration_log = await asyncio.to_thread(self._run_migrations)
-            await self._progress("migrate", 88, "Migrations complete")
+            if _file_hash(BACKEND_DIR / "requirements.txt") != req_hash_before:
+                await self._progress("deps", 60, "requirements.txt changed — installing "
+                                                "Python dependencies…")
+                await asyncio.to_thread(self._install_python_deps)
+                deps_installed = True
+                await self._progress("deps", 68, "Python dependencies installed")
 
-            await self._progress("cache", 92, "Clearing cache…")
-            cleared = await QueueService().clear_cache()
-            await self._progress("cache", 95, f"Cleared {cleared} cache keys")
+            frontend_note = await asyncio.to_thread(self._rebuild_frontend)
+            if frontend_note:
+                await self._progress("frontend", 72, frontend_note)
 
+            await self._progress("migrate", 78, "Running database migrations…")
+            pre_update_revision = await asyncio.to_thread(self._alembic_current)
+            migration_log = await asyncio.to_thread(self._run_alembic, "upgrade", "head")
+            migrations_ran = True
+            await self._progress("migrate", 86, "Migrations complete")
+
+            # durable success FIRST; everything after this is best-effort
             await self.settings_repo.set(KEY_CURRENT_COMMIT, target_sha)
             record.status = UpdateStatus.success
             record.version = check["latest_version"] or self.current_version()
-            record.log = "\n".join(_run_state["log"]) + "\n--- migrations ---\n" + migration_log[-4000:]
+            record.log = "\n".join(_run_state["log"]) + \
+                "\n--- migrations ---\n" + migration_log[-4000:]
             record.finished_at = datetime.now(timezone.utc)
             await self.db.commit()
-            self._prune_backups(self.app_settings.backup_path)
+
+            await self._progress("cache", 92, "Clearing cache…")
+            try:
+                cleared = await QueueService().clear_cache()
+                await self._progress("cache", 95, f"Cleared {cleared} cache keys")
+            except Exception as exc:  # cache clear must never fail a completed update
+                await self._progress("cache", 95, f"Cache clear skipped (non-fatal): {exc}")
+
+            await self._prune_backups(self.app_settings.backup_path)
             await self._progress("done", 100, f"Update to {target_sha[:10]} successful ✔")
 
             if cfg["auto_restart"]:
@@ -391,18 +503,47 @@ class UpdateService:
         except Exception as exc:
             logger.exception("update failed")
             await self._progress("error", 0, f"Update failed: {exc}")
+            rollback_ok = True
+
+            if migrations_ran:
+                # migrations must be reverted BEFORE restoring old files —
+                # the new migration scripts are still on disk right now
+                target_rev = pre_update_revision or "base"
+                try:
+                    await asyncio.to_thread(self._run_alembic, "downgrade", target_rev)
+                    await self._progress("rolled_back", 0,
+                                         f"Database downgraded to {target_rev}")
+                except Exception as db_exc:
+                    rollback_ok = False
+                    await self._progress(
+                        "rollback_failed", 0,
+                        f"DATABASE DOWNGRADE FAILED — schema may be ahead of code. "
+                        f"Restore the db backup from backups/. Error: {db_exc}",
+                    )
+
             if backup_zip and backup_zip.exists():
                 try:
-                    restored = self._rollback_files(backup_zip, protected)
-                    record.status = UpdateStatus.rolled_back
+                    restored = await asyncio.to_thread(
+                        self._rollback_files, backup_zip, protected)
                     await self._progress(
                         "rolled_back", 0, f"Rolled back {restored} files from {backup_zip.name}"
                     )
+                    if deps_installed:
+                        try:
+                            await asyncio.to_thread(self._install_python_deps)
+                            await self._progress("rolled_back", 0,
+                                                 "Reinstalled original dependencies")
+                        except Exception as pip_exc:
+                            rollback_ok = False
+                            await self._progress("rollback_failed", 0,
+                                                 f"Dependency reinstall failed: {pip_exc}")
                 except Exception as rb_exc:
-                    record.status = UpdateStatus.failed
-                    await self._progress("rollback_failed", 0, f"Rollback failed: {rb_exc}")
+                    rollback_ok = False
+                    await self._progress("rollback_failed", 0, f"File rollback failed: {rb_exc}")
             else:
-                record.status = UpdateStatus.failed
+                rollback_ok = False
+
+            record.status = UpdateStatus.rolled_back if rollback_ok else UpdateStatus.failed
             record.log = "\n".join(_run_state["log"])
             record.finished_at = datetime.now(timezone.utc)
             await self.db.commit()

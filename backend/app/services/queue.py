@@ -14,9 +14,8 @@ from app.services.redis_client import get_redis
 QUEUE_KEY = "aiauto:queue:pending"
 SEQ_KEY = "aiauto:queue:seq"
 CANCEL_SET = "aiauto:queue:cancelled"
-HEARTBEAT_KEY = "aiauto:worker:heartbeat"
-CHROME_STATUS_KEY = "aiauto:worker:chrome"
-CURRENT_JOB_KEY = "aiauto:worker:current_job"
+WORKERS_PREFIX = "aiauto:worker:info:"  # one hash per worker, TTL-expired
+WORKER_TTL_SECONDS = 20
 CACHE_PREFIX = "aiauto:cache:"
 
 
@@ -53,26 +52,62 @@ class QueueService:
         return bool(removed)
 
     async def is_cancelled(self, prompt_id: str) -> bool:
+        """Consume the cancel flag (destructive — use once per job start)."""
         return bool(await self.redis.srem(CANCEL_SET, prompt_id))
+
+    async def peek_cancelled(self, prompt_id: str) -> bool:
+        """Non-destructive cancel-flag check (safe to poll mid-job)."""
+        return bool(await self.redis.sismember(CANCEL_SET, prompt_id))
+
+    async def clear_cancel_flag(self, prompt_id: str) -> None:
+        """Remove a stale cancel flag (must happen before re-enqueueing a
+        previously-cancelled prompt, or the worker cancels it instantly)."""
+        await self.redis.srem(CANCEL_SET, prompt_id)
 
     async def pop_blocking(self, timeout: int = 5) -> str | None:
         res = await self.redis.bzpopmin(QUEUE_KEY, timeout=timeout)
         return res[1] if res else None
 
-    # ---- worker status ----
+    # ---- worker registry (supports multiple workers) ----
+    async def register_heartbeat(
+        self, worker_id: str, *, provider: str, chrome: str, current_job: str | None
+    ) -> None:
+        key = WORKERS_PREFIX + worker_id
+        from datetime import datetime, timezone
+
+        await self.redis.hset(key, mapping={
+            "heartbeat": datetime.now(timezone.utc).isoformat(),
+            "provider": provider,
+            "chrome": chrome,
+            "current_job": current_job or "",
+        })
+        await self.redis.expire(key, WORKER_TTL_SECONDS)
+
+    async def live_workers(self) -> list[dict]:
+        out = []
+        async for key in self.redis.scan_iter(f"{WORKERS_PREFIX}*", count=100):
+            info = await self.redis.hgetall(key)
+            info["id"] = key.removeprefix(WORKERS_PREFIX)
+            out.append(info)
+        return out
+
+    async def active_job_ids(self) -> set[str]:
+        return {w["current_job"] for w in await self.live_workers() if w.get("current_job")}
+
     async def worker_status(self) -> dict:
+        """Aggregate view for the dashboard."""
         try:
-            heartbeat = await self.redis.get(HEARTBEAT_KEY)
-            chrome = await self.redis.get(CHROME_STATUS_KEY)
-            current_job = await self.redis.get(CURRENT_JOB_KEY)
+            workers = await self.live_workers()
         except Exception:  # Redis down — report offline instead of failing
-            heartbeat = chrome = current_job = None
+            workers = []
+        online = len(workers) > 0
         return {
-            "worker_online": heartbeat is not None,
-            "chrome_connected": chrome == "connected",
-            "playwright_ready": heartbeat is not None,
-            "last_heartbeat": heartbeat,
-            "current_job": current_job,
+            "worker_online": online,
+            "chrome_connected": any(w.get("chrome") == "connected" for w in workers),
+            "playwright_ready": online,
+            "last_heartbeat": max((w.get("heartbeat", "") for w in workers), default=None),
+            "current_job": next((w["current_job"] for w in workers if w.get("current_job")), None),
+            "worker_count": len(workers),
         }
 
     # ---- cache ----

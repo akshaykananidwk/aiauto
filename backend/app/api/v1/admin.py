@@ -2,14 +2,17 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_admin
 from app.api.v1.prompts import to_out
 from app.db.session import get_db
+from app.models.quota import DepartmentQuota
 from app.repositories.audit import AuditRepository
 from app.repositories.prompt import PromptRepository
 from app.schemas.prompt import PromptOut
+from app.schemas.quota import DepartmentQuotaIn, DepartmentQuotaOut
 from app.schemas.settings import AdminSettings, AdminSettingsUpdate
 from app.services.app_settings import AppSettingsService
 from app.services.queue import QueueService
@@ -78,3 +81,35 @@ async def update_settings_endpoint(
     body: AdminSettingsUpdate, db: AsyncSession = Depends(get_db)
 ) -> AdminSettings:
     return await AppSettingsService(db).update(body)
+
+
+# ---- department quotas ----
+
+@router.get("/quotas", response_model=list[DepartmentQuotaOut])
+async def list_department_quotas(db: AsyncSession = Depends(get_db)) -> list[DepartmentQuota]:
+    res = await db.execute(select(DepartmentQuota).order_by(DepartmentQuota.department))
+    return list(res.scalars().all())
+
+
+@router.put("/quotas", response_model=DepartmentQuotaOut)
+async def upsert_department_quota(
+    body: DepartmentQuotaIn, db: AsyncSession = Depends(get_db)
+) -> DepartmentQuota:
+    quota = await db.get(DepartmentQuota, body.department)
+    if quota is None:
+        quota = DepartmentQuota(department=body.department)
+        db.add(quota)
+    quota.daily_limit = body.daily_limit
+    quota.monthly_limit = body.monthly_limit
+    await db.commit()
+    await db.refresh(quota)
+    return quota
+
+
+@router.delete("/quotas/{department}")
+async def delete_department_quota(department: str, db: AsyncSession = Depends(get_db)):
+    quota = await db.get(DepartmentQuota, department)
+    if quota is not None:
+        await db.delete(quota)
+        await db.commit()
+    return {"ok": True}

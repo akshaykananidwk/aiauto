@@ -14,7 +14,10 @@ from app.schemas.prompt import PromptCreate
 from app.services import events
 from app.services.audit import audit
 from app.services.queue import QueueService
+from app.services.quota import QuotaService
 from app.services.storage import StorageService, guess_mime, safe_filename
+
+ALLOWED_PROVIDERS = {"", "browser", "openai", "anthropic", "gemini"}
 
 
 class PromptService:
@@ -28,9 +31,15 @@ class PromptService:
     async def submit(
         self, user: User, data: PromptCreate, uploads: list[UploadFile]
     ) -> Prompt:
-        if await self.queue.size() >= self.settings.max_queue_size:
+        from app.services.app_settings import AppSettingsService
+
+        admin_settings = await AppSettingsService(self.db).effective()
+        if await self.queue.size() >= admin_settings.max_queue_size:
             raise ValueError("queue is full — try again in a few minutes")
-        self.storage.check_storage_limit()
+        await self.storage.check_storage_limit_async(admin_settings.storage_limit_gb)
+        await QuotaService(self.db).check(user)  # raises QuotaExceededError
+        if data.provider not in ALLOWED_PROVIDERS:
+            raise ValueError(f"unknown provider '{data.provider}'")
 
         prompt = Prompt(
             user_id=user.id,
@@ -40,15 +49,25 @@ class PromptService:
             priority=data.priority if user.role.value == "admin" else 0,
             computer_name=data.computer_name,
             department=user.department,
+            provider=data.provider,
         )
         self.repo.add(prompt)
         await self.db.flush()
 
         max_bytes = self.settings.max_upload_mb * 1024 * 1024
         for up in uploads:
-            content = await up.read()
-            if len(content) > max_bytes:
-                raise ValueError(f"file {up.filename} exceeds {self.settings.max_upload_mb} MB")
+            # stream in chunks so an oversized upload is rejected at the
+            # cap instead of being read fully into memory first
+            chunks: list[bytes] = []
+            total = 0
+            while chunk := await up.read(1024 * 1024):
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ValueError(
+                        f"file {up.filename} exceeds {self.settings.max_upload_mb} MB"
+                    )
+                chunks.append(chunk)
+            content = b"".join(chunks)
             rel, size = self.storage.save_bytes(
                 "uploads", prompt.id, up.filename or "upload.bin", content
             )
@@ -107,6 +126,9 @@ class PromptService:
             user_id=by_user.id, meta={"prompt_id": prompt.id},
         )
         await self.db.commit()
+        # a leftover cancel flag from a mid-job cancellation would kill the
+        # retried run the moment the worker picks it up
+        await self.queue.clear_cancel_flag(prompt.id)
         position = await self.queue.enqueue(prompt.id, prompt.priority)
         await events.publish(
             events.PROMPT_SUBMITTED,

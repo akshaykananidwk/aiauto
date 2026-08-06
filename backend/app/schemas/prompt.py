@@ -13,6 +13,7 @@ class PromptCreate(BaseModel):
     wants_image: bool = False
     priority: int = Field(default=0, ge=0, le=10)
     computer_name: str = Field(default="", max_length=128)
+    provider: str = Field(default="", max_length=32)  # "" = server default
 
 
 class FileOut(BaseModel):
@@ -41,6 +42,11 @@ class PromptOut(BaseModel):
     retry_count: int
     computer_name: str
     department: str
+    provider: str = ""
+    model: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float = 0.0
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None

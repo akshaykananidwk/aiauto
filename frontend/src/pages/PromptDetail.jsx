@@ -71,8 +71,28 @@ export default function PromptDetail() {
 
       {prompt.response_text && (
         <div className="card">
-          <h2>AI Response</h2>
+          <div className="row between">
+            <h2>AI Response</h2>
+            <div className="row" style={{ gap: 6 }}>
+              <button className="btn ghost sm" title="Read aloud" onClick={() => {
+                if (!window.speechSynthesis) return
+                if (window.speechSynthesis.speaking) { window.speechSynthesis.cancel(); return }
+                window.speechSynthesis.speak(new SpeechSynthesisUtterance(prompt.response_text.slice(0, 3000)))
+              }}>🔊</button>
+              <button className="btn ghost sm" title="Copy" onClick={() =>
+                navigator.clipboard?.writeText(prompt.response_text)}>📋 Copy</button>
+            </div>
+          </div>
           <div className="response-box">{prompt.response_text}</div>
+          {(prompt.provider || prompt.model) && (
+            <p className="muted" style={{ marginBottom: 0 }}>
+              {prompt.provider && <>Provider: {prompt.provider}</>}
+              {prompt.model && <> · Model: {prompt.model}</>}
+              {(prompt.input_tokens > 0 || prompt.output_tokens > 0) &&
+                <> · Tokens: {prompt.input_tokens}/{prompt.output_tokens}</>}
+              {prompt.cost_usd > 0 && <> · Est. cost: ${prompt.cost_usd}</>}
+            </p>
+          )}
         </div>
       )}
 

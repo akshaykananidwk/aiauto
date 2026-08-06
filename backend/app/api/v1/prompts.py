@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+import csv
+import io
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
@@ -9,8 +13,10 @@ from app.models.prompt import Prompt, PromptStatus
 from app.models.user import User, UserRole
 from app.repositories.prompt import PromptRepository
 from app.schemas.prompt import FileOut, PromptCreate, PromptListOut, PromptOut
+from app.schemas.quota import QuotaUsageOut
 from app.services.prompt import PromptService
 from app.services.queue import QueueService
+from app.services.quota import QuotaService, QuotaExceededError
 
 router = APIRouter(prefix="/prompts", tags=["prompts"])
 
@@ -50,20 +56,64 @@ async def submit_prompt(
     wants_image: bool = Form(False),
     priority: int = Form(0, ge=0, le=10),
     computer_name: str = Form("", max_length=128),
+    provider: str = Form("", max_length=32),
     files: list[UploadFile] = File(default=[]),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> PromptOut:
     data = PromptCreate(
         prompt_text=prompt_text, wants_image=wants_image,
-        priority=priority, computer_name=computer_name,
+        priority=priority, computer_name=computer_name, provider=provider,
     )
     try:
         prompt = await PromptService(db).submit(user, data, files)
+    except QuotaExceededError as exc:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, str(exc))
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
     position = await QueueService().position(prompt.id)
     return to_out(prompt, position)
+
+
+@router.get("/quota", response_model=QuotaUsageOut)
+async def my_quota(
+    user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> QuotaUsageOut:
+    return QuotaUsageOut(**await QuotaService(db).usage(user))
+
+
+@router.get("/export")
+async def export_my_history(
+    fmt: str = Query(default="json", pattern="^(json|csv)$"),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Export the caller's full prompt history (conversation backup)."""
+    items, _ = await PromptRepository(db).list(user_id=user.id, page=1, page_size=10000)
+    if fmt == "json":
+        payload = [
+            {
+                "id": p.id, "prompt": p.prompt_text, "response": p.response_text,
+                "status": p.status.value, "provider": p.provider,
+                "created_at": p.created_at.isoformat(),
+                "files": [f.filename for f in p.files],
+            }
+            for p in items
+        ]
+        return JSONResponse(
+            payload,
+            headers={"Content-Disposition": "attachment; filename=prompt_history.json"},
+        )
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["id", "created_at", "status", "provider", "prompt", "response"])
+    for p in items:
+        writer.writerow([p.id, p.created_at.isoformat(), p.status.value, p.provider,
+                         p.prompt_text, p.response_text or ""])
+    return Response(
+        buf.getvalue(), media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=prompt_history.csv"},
+    )
 
 
 @router.get("", response_model=PromptListOut)

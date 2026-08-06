@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_admin
@@ -34,10 +37,14 @@ async def create_user(
         full_name=body.full_name,
         department=body.department,
         role=body.role,
-        hashed_password=hash_password(body.password),
+        hashed_password=await asyncio.to_thread(hash_password, body.password),
     )
     repo.add(user)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, "Username or email already in use")
     await audit(db, "user.created", f"user {user.username} created", user_id=admin.id,
                 meta={"new_user": user.username, "role": user.role.value}, commit=True)
     await db.refresh(user)
@@ -56,13 +63,17 @@ async def update_user(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")
     patch = body.model_dump(exclude_none=True)
     if "password" in patch:
-        user.hashed_password = hash_password(patch.pop("password"))
+        user.hashed_password = await asyncio.to_thread(hash_password, patch.pop("password"))
     for key, value in patch.items():
         setattr(user, key, value)
     if user.id == admin.id and user.is_active is False:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "You cannot deactivate yourself")
-    await audit(db, "user.updated", f"user {user.username} updated", user_id=admin.id,
-                meta={"target": user.username, "fields": list(patch.keys())}, commit=True)
+    try:
+        await audit(db, "user.updated", f"user {user.username} updated", user_id=admin.id,
+                    meta={"target": user.username, "fields": list(patch.keys())}, commit=True)
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, "Email already in use")
     await db.refresh(user)
     return user
 

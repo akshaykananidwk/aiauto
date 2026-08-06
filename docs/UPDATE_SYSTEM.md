@@ -28,12 +28,19 @@ Click **⬆ Update Now** (enabled only when an update exists). Pipeline:
 
 | Step | What happens | On failure |
 |---|---|---|
-| 1. Backup | zip of all updatable code + `pg_dump` of the DB into `backups/` | update aborts, nothing changed |
+| 1. Backup | zip of all updatable code + database backup (SQLite file copy or `pg_dump`) into `backups/` | update aborts, nothing changed |
 | 2. Download | branch tarball fetched from GitHub (path-traversal-safe extraction) | abort → **auto-rollback** |
 | 3. Apply | new files copied over the installation — **protected paths skipped** | auto-rollback |
-| 4. Migrate | `alembic upgrade head` runs automatically | auto-rollback of files |
-| 5. Cache | application Redis cache keys cleared | auto-rollback |
-| 6. Finish | installed commit recorded, old backups pruned, optional restart | — |
+| 4. Dependencies | `pip install` runs when `requirements.txt` changed; frontend rebuilt when `npm` is available | auto-rollback (incl. dependency reinstall) |
+| 5. Migrate | `alembic upgrade head` runs automatically (pre-update revision recorded) | **DB downgraded to the pre-update revision**, then files rolled back |
+| 6. Finish | installed commit recorded and committed **before** best-effort steps | — |
+| 7. Cache | application Redis cache keys cleared (best-effort — never fails a completed update) | logged warning only |
+| 8. Restart | old backups pruned, optional service restart | — |
+
+The updater refuses to run if the installation root looks wrong (e.g. it
+resolves to `/` or has no `VERSION` marker) — set `AIAUTO_ROOT` when
+deploying with a non-standard layout. All heavy steps run off the event
+loop, so the API stays responsive during an update.
 
 Live progress (step, %, log) streams to the page over WebSocket, and every
 run is recorded in **Update History** with its backup file name.
@@ -48,14 +55,16 @@ cannot be removed. Matching is by whole path segment, so `.env.example`
 
 ## Automatic rollback
 
-Any error after the backup — download failure, bad archive, migration
-error — restores every backed-up file from the zip. Protected paths were
-never touched, so user data and secrets survive both the update and the
-rollback. The record is marked `rolled_back` in history.
-
-If a migration fails, files are rolled back but the DB may need attention:
-restore the `db_*.sql` dump from `backups/` if the migration was partially
-applied (PostgreSQL runs DDL transactionally, so this is rare).
+Any error after the backup — download failure, bad archive, dependency
+install failure, migration error — triggers a full rollback: migrations
+are downgraded to the recorded pre-update revision **first** (while the
+new migration scripts are still on disk), then every backed-up file is
+restored, and original dependencies are reinstalled if they had been
+upgraded. Protected paths were never touched, so user data and secrets
+survive both the update and the rollback. The record is marked
+`rolled_back` in history — or `failed` with an explicit message if any
+rollback step itself failed (in that case restore the `db_*` backup from
+`backups/` manually).
 
 ## Restart behaviour
 

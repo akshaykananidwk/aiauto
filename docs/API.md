@@ -2,8 +2,10 @@
 
 Base URL: `/api/v1` · Interactive docs: `GET /api/docs` (Swagger UI).
 
-Authentication: `Authorization: Bearer <access_token>` on every request.
-Access tokens expire after 30 min (default) — refresh with the refresh token.
+Authentication: `Authorization: Bearer <access_token>` **or** an
+`X-API-Key: ak_…` header (create keys under *API Keys* in the app).
+Access tokens expire after 30 min (default) — refresh with the refresh
+token. Refresh tokens rotate: each refresh invalidates the previous one.
 
 ## Auth
 
@@ -19,13 +21,50 @@ Access tokens expire after 30 min (default) — refresh with the refresh token.
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/prompts` | `multipart/form-data`: `prompt_text`, `wants_image` (bool), `priority` (admin only), `computer_name`, `files` (0..n uploads). → PromptOut, 201 |
+| POST | `/prompts` | `multipart/form-data`: `prompt_text`, `wants_image` (bool), `priority` (admin only), `provider` (`""`/`browser`/`openai`/`anthropic`/`gemini`), `computer_name`, `files` (0..n uploads). → PromptOut, 201. 429 when over quota |
 | GET | `/prompts` | own prompts; admin may pass `all_users=true`. Filters: `status`, `search`, `page`, `page_size` |
-| GET | `/prompts/{id}` | includes `queue_position` while waiting |
+| GET | `/prompts/quota` | caller's quota usage `{daily_used, daily_limit, monthly_used, monthly_limit}` |
+| GET | `/prompts/export?fmt=json\|csv` | full personal history export |
+| GET | `/prompts/{id}` | includes `queue_position` while waiting, provider/model/tokens/cost when done |
 | POST | `/prompts/{id}/cancel` | waiting/processing only |
 | POST | `/prompts/{id}/retry` | failed/cancelled only |
 
 Statuses: `waiting → processing → completed | failed | cancelled`.
+
+## Templates (prompt library)
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/templates` | visible = own + shared. Filters: `search`, `category`, `tag`, `favorites_only` |
+| GET | `/templates/categories` | distinct visible categories |
+| POST | `/templates` | `{title, body, category?, tags?, is_shared?}` |
+| PATCH/DELETE | `/templates/{id}` | owner or admin only |
+| POST | `/templates/{id}/favorite` | toggle; returns `{favorite: bool}` |
+| POST | `/templates/{id}/use` | increments the usage counter |
+
+## Scheduled prompts
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/schedules` | own (admin: all) |
+| POST | `/schedules` | `schedule_type`: `once` (+`run_once_at`), `interval` (+`interval_minutes`), `daily`/`weekly` (+`run_at_time` "HH:MM" UTC, `weekday` 0-6) |
+| PATCH | `/schedules/{id}` | pause/resume (`is_active`), retiming |
+| DELETE | `/schedules/{id}` | |
+
+## Notifications
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/notifications` | `unread_only`, paging; returns `{items, unread, total}` |
+| POST | `/notifications/{id}/read` · `/notifications/read-all` | |
+
+## API keys
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api-keys` | prefixes only, never the full key |
+| POST | `/api-keys` | returns `plain_key` exactly once |
+| DELETE | `/api-keys/{id}` | revoke |
 
 ## Files
 
@@ -46,11 +85,18 @@ Statuses: `waiting → processing → completed | failed | cancelled`.
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/users` / POST `/users` | list / create |
-| PATCH | `/users/{id}` | update fields, reset password, enable |
+| PATCH | `/users/{id}` | update fields, reset password, quotas (`daily_limit`, `monthly_limit`), `telegram_chat_id` |
 | DELETE | `/users/{id}` | deactivate (soft) |
 | GET | `/admin/queue` | live queue in execution order + running job |
 | GET | `/admin/logs` | audit log; filters `event`, `level`, `user_id`, paging |
-| GET/PUT | `/admin/settings` | runtime settings |
+| GET/PUT | `/admin/settings` | runtime settings incl. default quotas + announcement |
+| GET/PUT/DELETE | `/admin/quotas` | department quotas |
+| GET | `/admin/analytics?days=N` | totals, daily series, top users, by department/provider |
+| GET | `/admin/analytics/audit-report` | audit log as CSV |
+| GET | `/admin/system/health` | CPU/mem/disk, DB/Redis status, worker fleet |
+| GET/POST | `/admin/system/backups` | list / create backup |
+| POST | `/admin/system/backups/restore` | `{name, confirm: true}` — restore wizard |
+| GET | `/dashboard/announcement` | current banner (any authenticated user) |
 
 ## Update system (admin)
 

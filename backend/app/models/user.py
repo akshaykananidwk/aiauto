@@ -3,10 +3,10 @@ from __future__ import annotations
 import enum
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, String
+from sqlalchemy import Boolean, Enum, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.db.base import Base, TimestampMixin
+from app.db.base import Base, TimestampMixin, TZDateTime
 
 
 class UserRole(str, enum.Enum):
@@ -27,6 +27,10 @@ class User(TimestampMixin, Base):
     )
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+    # personal quota overrides; NULL = inherit department/global, 0 = unlimited
+    daily_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    monthly_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    telegram_chat_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     prompts = relationship("Prompt", back_populates="user", lazy="noload")

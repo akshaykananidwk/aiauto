@@ -16,6 +16,9 @@ class AdminSettings(BaseModel):
     browser_profile_path: str = Field(default="", max_length=512)
     delete_conversations_after_run: bool = True
     backup_keep_count: int = Field(default=10, ge=1, le=100)
+    default_daily_limit: int = Field(default=0, ge=0, le=1_000_000)
+    default_monthly_limit: int = Field(default=0, ge=0, le=10_000_000)
+    announcement: str = Field(default="", max_length=2000)
 
 
 class AdminSettingsUpdate(BaseModel):
@@ -29,3 +32,6 @@ class AdminSettingsUpdate(BaseModel):
     browser_profile_path: str | None = None
     delete_conversations_after_run: bool | None = None
     backup_keep_count: int | None = Field(default=None, ge=1, le=100)
+    default_daily_limit: int | None = Field(default=None, ge=0, le=1_000_000)
+    default_monthly_limit: int | None = Field(default=None, ge=0, le=10_000_000)
+    announcement: str | None = Field(default=None, max_length=2000)

@@ -1,5 +1,21 @@
 # Installation Guide
 
+## Fastest path — one command
+
+```bash
+git clone <your-repo-url> aiauto && cd aiauto
+./setup.sh          # Windows: setup.bat
+./start.sh          # Windows: start.bat  (--with-worker on the master PC)
+```
+
+Setup installs everything (venv, Python + Node packages, .env with a
+generated SECRET_KEY, database migrations, admin account — the initial
+password is printed once, frontend build) and `start` verifies every
+service before printing **System Ready**. The backend serves the built
+frontend, so a single process gives you the whole app at
+http://localhost:8000. The rest of this guide covers the manual and
+Docker paths plus master-computer specifics.
+
 Two machines are involved:
 
 | Machine | Runs | Notes |

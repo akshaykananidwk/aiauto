@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import JSON, ForeignKey, String, Text
+from sqlalchemy import JSON, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin
@@ -8,6 +8,7 @@ from app.db.base import Base, TimestampMixin
 
 class AuditLog(TimestampMixin, Base):
     __tablename__ = "audit_logs"
+    __table_args__ = (Index("ix_audit_logs_created", "created_at"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)

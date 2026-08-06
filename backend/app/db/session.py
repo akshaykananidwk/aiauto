@@ -3,16 +3,18 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
 
 settings = get_settings()
 
-engine = create_async_engine(
-    settings.database_url,
-    echo=False,
-    pool_pre_ping=True,
-)
+_engine_kwargs: dict = {"echo": False, "pool_pre_ping": True}
+if settings.database_url.startswith("sqlite"):
+    # SQLite is for dev/test only; NullPool avoids cross-event-loop reuse
+    _engine_kwargs["poolclass"] = NullPool
+
+engine = create_async_engine(settings.database_url, **_engine_kwargs)
 
 async_session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
