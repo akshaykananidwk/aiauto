@@ -29,8 +29,11 @@ def setup_logging() -> None:
     console.setFormatter(fmt)
     root.addHandler(console)
 
+    # one log file PER PROCESS: on Windows two processes sharing a rotating
+    # file deadlock on rollover (the other process holds the file open)
+    logname = "worker.log" if "worker" in (sys.argv[0] or "") else "aiauto.log"
     file_handler = logging.handlers.RotatingFileHandler(
-        log_dir / "aiauto.log", maxBytes=10 * 1024 * 1024, backupCount=10, encoding="utf-8"
+        log_dir / logname, maxBytes=10 * 1024 * 1024, backupCount=10, encoding="utf-8"
     )
     file_handler.setFormatter(fmt)
     root.addHandler(file_handler)

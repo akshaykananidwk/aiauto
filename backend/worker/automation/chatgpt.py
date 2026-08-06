@@ -412,7 +412,13 @@ class ChatGPTProvider:
         await self._attach_files(page, upload_paths)
         baseline = await self._assistant_count(page)
         await self._type_and_send(page, prompt_text)
-        await self._wait_for_completion(page, timeout_seconds, baseline, wants_image)
+        try:
+            await self._wait_for_completion(page, timeout_seconds, baseline, wants_image)
+        except GenerationTimeoutError:
+            # capture what the page ACTUALLY showed when time ran out —
+            # this turns "it just never finished" into a diagnosable fact
+            await self._dump_debug(page, "generation-timeout")
+            raise
 
         text = await self._last_message_text(page)
         images = await self._collect_images(page, wants_image)

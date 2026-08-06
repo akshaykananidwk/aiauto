@@ -38,6 +38,9 @@ MESSAGE_IMAGE = [
     "img[src*='oaiusercontent']",
     "img[src*='files.oaiusercontent.com']",
     "img[src*='sdmntpr']",
+    "img[src*='/backend-api/'][src*='content']",
+    "img[data-testid*='image']",
+    "div[data-testid*='dalle'] img",
     "img[src^='blob:']",
 ]
 
@@ -47,6 +50,7 @@ IMAGE_GENERATING = [
     "[data-testid*='image-gen']",
     "div:has-text('Creating image')",
     "div:has-text('Generating image')",
+    "div:has-text('Making image')",
     "div:has-text('Getting started')",
     "progress",
     "[aria-label*='Creating']",

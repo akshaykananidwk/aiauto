@@ -21,10 +21,31 @@ export default function AdminSystem() {
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
 
+  const [diag, setDiag] = useState(null)
+  const [logTail, setLogTail] = useState(null)
+
   const load = async () => {
     try {
-      const [h, b] = await Promise.all([api('/admin/system/health'), api('/admin/system/backups')])
-      setHealth(h); setBackups(b)
+      const [h, b, d] = await Promise.all([
+        api('/admin/system/health'), api('/admin/system/backups'),
+        api('/admin/system/diagnostics'),
+      ])
+      setHealth(h); setBackups(b); setDiag(d)
+    } catch (err) { setError(err.message) }
+  }
+
+  // diagnostics files need the JWT, so fetch as a blob and open that
+  const openDiagFile = async (name) => {
+    try {
+      const res = await api(`/admin/system/diagnostics/file?name=${encodeURIComponent(name)}`, { raw: true })
+      if (!res.ok) throw new Error(`Could not open ${name} (${res.status})`)
+      window.open(URL.createObjectURL(await res.blob()), '_blank')
+    } catch (err) { setError(err.message) }
+  }
+
+  const showTail = async (name) => {
+    try {
+      setLogTail(await api(`/admin/system/diagnostics/tail?name=${encodeURIComponent(name)}&lines=200`))
     } catch (err) { setError(err.message) }
   }
   useEffect(() => {
@@ -94,6 +115,49 @@ export default function AdminSystem() {
             )}
           </tbody>
         </table>
+      </div>
+
+      <div className="card">
+        <h2>Image-Capture Diagnostics</h2>
+        <p className="muted" style={{ marginTop: 0 }}>
+          When the worker cannot capture a generated image it saves a screenshot of
+          exactly what the ChatGPT page showed. Open a dump below to see the real cause.
+        </p>
+        {diag && diag.debug_dumps.length > 0 ? (
+          <div className="table-scroll">
+            <table>
+              <thead><tr><th>Dump</th><th>Size</th><th>When</th><th></th></tr></thead>
+              <tbody>
+                {diag.debug_dumps.map(f => (
+                  <tr key={f.name}>
+                    <td><code>{f.name}</code></td>
+                    <td>{(f.size_bytes / 1024).toFixed(0)} KB</td>
+                    <td className="muted">{new Date(f.modified).toLocaleString()}</td>
+                    <td><button className="btn sm" onClick={() => openDiagFile(f.name)}>Open</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : <p className="muted">No capture-failure dumps — good sign.</p>}
+        <div className="row" style={{ marginTop: 10, gap: 8, flexWrap: 'wrap' }}>
+          {diag?.logs.map(l => (
+            <button key={l.name} className="btn secondary sm" onClick={() => showTail(l.name)}>
+              📜 View {l.name} (last 200 lines)
+            </button>
+          ))}
+        </div>
+        {logTail && (
+          <div style={{ marginTop: 10 }}>
+            <div className="row between">
+              <b>{logTail.name}</b>
+              <button className="btn ghost sm" onClick={() => setLogTail(null)}>Close</button>
+            </div>
+            <pre className="response-box" style={{ maxHeight: 320, overflow: 'auto', fontSize: 12 }}>
+              {logTail.lines.join('\n')}
+            </pre>
+          </div>
+        )}
       </div>
 
       <div className="card">

@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.3.4 — Image flow proven end-to-end + built-in diagnostics
+
+- **The website display flow is now PROVEN, not assumed**: a real-browser
+  end-to-end test (`scripts/e2e_display_check.py`) drives the actual UI —
+  login → submit image prompt → live status → thumbnail renders → viewer
+  → Copy Image (real PNG on the clipboard) → Download (actual browser
+  download) → Open-in-tab inline. All 11 checks pass; when an image
+  reaches the server it WILL display, copy, download and save
+- **Image-Capture Diagnostics in the admin panel** (System page): when
+  the worker cannot capture a generated image (or times out), it saves a
+  screenshot + HTML of exactly what the ChatGPT page showed; those dumps
+  and the worker/backend log tails are now viewable directly in the
+  website — the real cause of a failed image is one click away instead
+  of buried on the master computer
+- **Timeout dumps**: a generation timeout now also saves a debug
+  screenshot ("it just never finished" becomes a diagnosable fact)
+- **Live stage line on the prompt page**: while a job runs the page now
+  shows exactly what is happening ("Generating the image… this can take
+  a few minutes", "Image ready — downloading it to the server…") instead
+  of a bare "processing" badge
+- **Per-process log files**: the worker now logs to `logs/worker.log`
+  (backend keeps `logs/aiauto.log`) — on Windows two processes sharing
+  one rotating log file break rotation
+- Newer ChatGPT UI selectors for generated images ("Making image…",
+  backend-api content URLs, dalle test-ids)
+- 10 new tests (106 total)
+
 ## 1.3.3 — Worker resilience (no more stuck queue after an error)
 
 - **Double-worker bug fixed (root cause of `TargetClosedError`)**: after a

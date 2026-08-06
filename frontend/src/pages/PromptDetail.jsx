@@ -10,6 +10,7 @@ export default function PromptDetail() {
   const [viewer, setViewer] = useState(null)   // {file, url, view_url} for the image modal
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [stage, setStage] = useState('')       // live sub-state while processing
 
   // Copy the image itself to the clipboard so it pastes into Paint, Word,
   // WhatsApp, Photoshop… Clipboard API needs HTTPS/localhost; on plain
@@ -62,10 +63,19 @@ export default function PromptDetail() {
     } catch (err) { setError(err.message) }
   }
 
+  const STAGES = {
+    'prompt.processing': '🤖 The AI is working on your prompt…',
+    'prompt.generating_image': '🎨 Generating the image… (this can take a few minutes)',
+    'prompt.downloading': '⬇ Image ready — downloading it to the server…',
+  }
+
   useEffect(() => {
     load()
     const disconnect = connectEvents((event) => {
-      if (event.data?.prompt_id === id) load()
+      if (event.data?.prompt_id !== id) return
+      if (STAGES[event.type]) setStage(STAGES[event.type])
+      if (['prompt.completed', 'prompt.failed', 'prompt.cancelled'].includes(event.type)) setStage('')
+      load()
     })
     return disconnect
   }, [id])
@@ -112,6 +122,7 @@ export default function PromptDetail() {
             Submitted {new Date(prompt.created_at).toLocaleString()}
           </span>
         </div>
+        {active && stage && <div className="alert info" style={{ marginTop: 12 }}>{stage}</div>}
         {prompt.error && <div className="alert error" style={{ marginTop: 12 }}>{prompt.error}</div>}
         <h2 style={{ marginTop: 16 }}>Prompt</h2>
         <div className="response-box">{prompt.prompt_text}</div>
