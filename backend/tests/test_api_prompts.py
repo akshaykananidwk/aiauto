@@ -71,12 +71,6 @@ async def test_staff_priority_is_ignored(client):
     assert res.json()["priority"] == 0
 
 
-async def test_unknown_provider_rejected(client):
-    headers = await auth_headers(client, "alice")
-    res = await submit(client, headers, "hi", provider="evil-provider")
-    assert res.status_code == 400
-
-
 async def test_daily_quota_enforced(client):
     admin = await auth_headers(client, "admin")
     bob = await auth_headers(client, "bob")

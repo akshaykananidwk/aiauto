@@ -45,9 +45,9 @@ app = FastAPI(
     title=settings.app_name,
     version="1.1.0",
     description="Central AI automation platform: staff submit prompts, a queue "
-    "dispatches them to AI providers (a managed ChatGPT session or official "
-    "APIs), and results (text, images, files) come back — without staff ever "
-    "touching the account.",
+    "dispatches them to the master computer's managed ChatGPT Pro browser "
+    "session, and results (text, images, files) come back — without staff "
+    "ever touching the account.",
     lifespan=lifespan,
     docs_url="/api/docs",
     openapi_url="/api/openapi.json",
@@ -69,18 +69,21 @@ app.include_router(api_router, prefix=settings.api_prefix)
 
 @app.get("/api/health")
 async def health() -> dict:
-    """Liveness + dependency health, used by the start script and monitors."""
+    """Liveness + dependency health, used by the start script and monitors.
+    Hard-capped so a down dependency can never stall this endpoint."""
+    import asyncio
+
     db_ok = redis_ok = False
     try:
         from app.db.session import async_session_factory
 
         async with async_session_factory() as db:
-            await db.execute(text("SELECT 1"))
+            await asyncio.wait_for(db.execute(text("SELECT 1")), timeout=3)
         db_ok = True
     except Exception:
         pass
     try:
-        redis_ok = bool(await get_redis().ping())
+        redis_ok = bool(await asyncio.wait_for(get_redis().ping(), timeout=2))
     except Exception:
         pass
     status = "ok" if (db_ok and redis_ok) else "degraded"

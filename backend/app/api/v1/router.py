@@ -3,7 +3,6 @@ from fastapi import APIRouter
 from app.api.v1 import (
     admin,
     analytics,
-    apikeys,
     auth,
     dashboard,
     files,
@@ -24,7 +23,6 @@ api_router.include_router(files.router)
 api_router.include_router(templates.router)
 api_router.include_router(schedules.router)
 api_router.include_router(notifications.router)
-api_router.include_router(apikeys.router)
 api_router.include_router(users.router)
 api_router.include_router(dashboard.router)
 api_router.include_router(admin.router)

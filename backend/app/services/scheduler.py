@@ -141,7 +141,6 @@ class SchedulerService:
                     user_id=user.id,
                     prompt_text=sched.prompt_text,
                     wants_image=sched.wants_image,
-                    provider=sched.provider,
                     department=user.department,
                     computer_name="scheduler",
                     scheduled_id=sched.id,

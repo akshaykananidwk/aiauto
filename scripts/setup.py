@@ -259,7 +259,7 @@ def main() -> int:
     start_cmd = "start.bat" if IS_WINDOWS else "./start.sh"
     print(f"""
 Next steps:
-  1. Review .env (database, Redis, ChatGPT/API provider settings)
+  1. Review .env (database, Redis, ChatGPT browser settings)
   2. Start everything:        {start_cmd}
   3. Open the app:            http://localhost:8000
   4. Master computer (worker): see docs/INSTALLATION.md

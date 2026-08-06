@@ -11,7 +11,6 @@ class ScheduleCreate(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     prompt_text: str = Field(min_length=1, max_length=32000)
     wants_image: bool = False
-    provider: str = Field(default="", max_length=32)
     schedule_type: ScheduleType
     interval_minutes: int | None = Field(default=None, ge=5, le=10080)
     run_at_time: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$")
@@ -45,7 +44,6 @@ class ScheduleOut(BaseModel):
     title: str
     prompt_text: str
     wants_image: bool
-    provider: str
     schedule_type: ScheduleType
     interval_minutes: int | None = None
     run_at_time: str | None = None

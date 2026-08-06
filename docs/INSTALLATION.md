@@ -112,10 +112,29 @@ nssm set AIAutoWorker AppDirectory C:\aiauto\backend
    personal access token (read-only `Contents` permission is enough).
 4. Staff sign in from their own computers and start submitting prompts.
 
+## Redis on Windows
+
+Redis is required for the queue, realtime updates, rate limiting and
+login lockout. Official Redis has no native Windows build — pick one:
+
+1. **Memurai** (Redis-compatible, native Windows service, free Developer
+   edition): https://www.memurai.com → install, it runs on port 6379
+   automatically. Recommended for the single-machine office setup.
+2. **Redis for Windows port** (free, simple `.msi`):
+   https://github.com/tporadowski/redis/releases → install
+   `Redis-x64-*.msi`, keep "Add to PATH" and "Run as service" checked.
+3. **Docker Desktop**: `docker run -d --name redis -p 6379:6379 --restart unless-stopped redis:7`
+4. **WSL2**: `sudo apt install redis-server && sudo service redis-server start`
+
+Verify it works: `redis-cli ping` → `PONG` (or check the Admin → System
+page shows *Redis OK* after starting the backend).
+
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
+| `ModuleNotFoundError` running scripts | You're on the wrong Python. Call the venv interpreter explicitly: `backend\.venv\Scripts\python.exe ..\scripts\create_admin.py …` — and if the module really is missing, run `backend\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt` |
+| `Error … connecting to localhost:6379` | Redis is not running — see "Redis on Windows" above |
 | Worker offline in dashboard | Worker process not running, or Redis unreachable from master PC |
 | Chrome disconnected | Chrome not started with `--remote-debugging-port=9222`; use the .bat |
 | "login expired" failures | Open the master Chrome window and log into ChatGPT again |

@@ -1,38 +1,39 @@
 # AIAuto — Central AI Automation Platform
 
-An enterprise-grade platform that lets office staff use centrally managed
-AI — a **single ChatGPT Pro session** and/or **official AI APIs** —
-without ever seeing the account, the browser, or each other's data.
+An enterprise-grade platform that lets office staff use a centrally
+managed **ChatGPT Pro browser session** — without ever seeing the
+account, the browser, or each other's data. There are **no external AI
+API integrations**: one master computer, one subscription, zero per-token
+costs.
 
 ```
 Staff PC ──▶ Login ──▶ Prompt ──▶ Central Server (FastAPI + Redis queue)
                                         │
                                         ▼
-                          Master PC worker (Playwright / APIs)
-                          ChatGPT Pro ▸ OpenAI ▸ Claude ▸ Gemini
-                                        │   (automatic failover)
+                        Master PC worker (Playwright)
+                        logged-in ChatGPT Pro browser session
+                                        │
              text / images / files  ◀───┘
                                         │
 Staff PC ◀── WebSocket live status ◀────┘
 ```
 
-> **Note on Terms of Service:** automating the ChatGPT *web UI* may violate
-> OpenAI's terms and can break when the UI changes. The platform is
-> provider-pluggable — set `AI_PROVIDER=openai|anthropic|gemini` to use
-> official APIs with the identical staff experience, or configure a
-> failover chain mixing both. Browser automation mode exists because this
-> project was specified around it — use it at your own discretion.
+> **Note on Terms of Service:** automating the ChatGPT *web UI* may
+> violate OpenAI's terms and can break when the UI changes (selectors are
+> centralised in one file to make fixes one-liners). This project is
+> intentionally built around a single browser session — use it at your
+> own discretion.
 
 ## Highlights
 
-**83 features** — see [FEATURES.md](FEATURES.md) for the full list.
+**76 features** — see [FEATURES.md](FEATURES.md) for the full list.
 
 - **Privacy-first**: staff see only their own prompts, results and history;
-  admins see everything; nobody touches the AI accounts.
-- **Multi-provider AI** with per-prompt selection, auto-failover, token
-  and cost tracking, usage analytics.
+  admins see everything; nobody touches the ChatGPT account.
+- **Browser-automation only**: no AI API keys, no per-token billing — the
+  ChatGPT Pro subscription is the entire AI cost.
 - **Enterprise auth**: JWT + rotation + revocation, brute-force lockout,
-  role-based access, personal API keys, full audit trail.
+  role-based access, full audit trail.
 - **Queue** with priorities, retries, cancellation, multi-worker failover
   and a live dashboard.
 - **Productivity**: shared prompt library (categories/tags/favorites),
@@ -94,7 +95,7 @@ backend/
     repositories/ data access layer
     services/     business logic (queue, quota, notify, analytics, update…)
     api/v1/       HTTP + WebSocket endpoints
-  worker/         master-computer worker + AI providers
+  worker/         master-computer worker (ChatGPT browser automation)
   alembic/        database migrations
   tests/          67+ automated tests
 frontend/         React app (staff + admin dashboards, PWA)
@@ -119,6 +120,6 @@ docs/             installation, deployment, API, update system
 cd backend
 python -m venv .venv && . .venv/bin/activate     # Windows: .venv\Scripts\activate
 pip install -r requirements-dev.txt
-pytest                                            # 67 tests
+pytest
 python ../scripts/loadtest.py --password <admin-pw>   # quick load check
 ```

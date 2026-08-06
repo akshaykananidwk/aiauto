@@ -7,7 +7,6 @@ from app.models.update import UpdateRecord, UpdateStatus
 from app.models.template import PromptTemplate, TemplateFavorite
 from app.models.schedule import ScheduledPrompt, ScheduleType
 from app.models.notification import Notification
-from app.models.apikey import ApiKey
 from app.models.quota import DepartmentQuota
 
 __all__ = [
@@ -26,6 +25,5 @@ __all__ = [
     "ScheduledPrompt",
     "ScheduleType",
     "Notification",
-    "ApiKey",
     "DepartmentQuota",
 ]

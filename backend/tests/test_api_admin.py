@@ -75,7 +75,7 @@ async def test_analytics_shape(client):
     res = await client.get("/api/v1/admin/analytics?days=7", headers=admin)
     assert res.status_code == 200
     body = res.json()
-    assert {"totals", "daily", "top_users", "by_department", "by_provider"} <= body.keys()
+    assert {"totals", "daily", "top_users", "by_department"} <= body.keys()
     assert len(body["daily"]) == 7
 
 

@@ -78,25 +78,15 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 60
     login_rate_limit_per_minute: int = 10
 
-    # Worker / automation
-    ai_provider: str = "browser"  # default provider: browser | openai | anthropic | gemini
-    ai_failover_chain: str = ""   # e.g. "browser,openai,anthropic" — empty disables failover
-    worker_id: str = ""           # unique per worker machine; auto-generated when empty
+    # Worker / browser automation (the ONLY AI backend: the master
+    # computer's logged-in ChatGPT Pro browser session)
+    worker_id: str = ""  # unique per worker machine; auto-generated when empty
     chrome_cdp_url: str = "http://localhost:9222"
     chrome_profile_dir: str = ""
     chrome_headless: bool = False
     chatgpt_url: str = "https://chatgpt.com"
     response_timeout_seconds: int = 480
     delete_conversations_after_run: bool = True
-    enable_doc_extraction: bool = True  # extract text from PDF uploads for API providers
-    openai_api_key: str = ""
-    openai_text_model: str = "gpt-4o"
-    openai_image_model: str = "gpt-image-1"
-    anthropic_api_key: str = ""
-    anthropic_model: str = "claude-sonnet-4-5"
-    anthropic_max_tokens: int = 16384
-    gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.0-flash"
 
     # Quota defaults (0 = unlimited); user/department settings override
     default_daily_limit: int = 0

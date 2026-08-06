@@ -23,7 +23,6 @@ os.environ.update({
     "DEFAULT_MONTHLY_LIMIT": "0",
     "GITHUB_REPO": "",
     "GITHUB_TOKEN": "",
-    "AI_PROVIDER": "browser",
 })
 
 import fakeredis.aioredis  # noqa: E402

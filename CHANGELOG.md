@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.2.0 — Browser-only architecture
+
+**Breaking:** all external AI API integrations are removed. The platform
+now runs exclusively through the master computer's logged-in ChatGPT Pro
+browser session — no API keys, no per-token costs, one subscription.
+
+### Removed
+- OpenAI / Anthropic Claude / Google Gemini API providers and their
+  settings (`AI_PROVIDER`, `AI_FAILOVER_CHAIN`, all `*_API_KEY` vars)
+- Per-prompt provider selection and provider failover
+- Personal API keys (`X-API-Key` auth, the API Keys page, `api_keys` table)
+- Token usage and cost tracking (prompt columns, pricing tables,
+  analytics breakdowns)
+- Document-extraction helper that only served API providers (pypdf dep)
+- Migration `0003` drops the removed table/columns automatically
+
+### Improved
+- `/api/health` is hard-capped (a down Redis can never stall it) and the
+  Redis client fails fast with socket timeouts
+- `start.py` waits longer and tolerates slow first responses
+- Windows Redis installation guide + troubleshooting for
+  `ModuleNotFoundError` when the wrong Python is used
+
 ## 1.1.0 — Enterprise release
 
 ### Security

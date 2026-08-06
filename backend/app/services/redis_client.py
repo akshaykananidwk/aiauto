@@ -10,7 +10,14 @@ _client: aioredis.Redis | None = None
 def get_redis() -> aioredis.Redis:
     global _client
     if _client is None:
-        _client = aioredis.from_url(get_settings().redis_url, decode_responses=True)
+        _client = aioredis.from_url(
+            get_settings().redis_url,
+            decode_responses=True,
+            # fail fast when Redis is down instead of stalling API requests
+            # (socket_timeout must stay above the queue's 5s blocking pop)
+            socket_connect_timeout=3,
+            socket_timeout=10,
+        )
     return _client
 
 

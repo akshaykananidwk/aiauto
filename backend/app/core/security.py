@@ -69,21 +69,6 @@ def token_remaining_seconds(payload: dict[str, Any]) -> int:
     return max(0, int(exp - datetime.now(timezone.utc).timestamp()))
 
 
-# ---- personal API keys ----
-
-API_KEY_PREFIX = "ak_"
-
-
-def generate_api_key() -> tuple[str, str, str]:
-    """Returns (plain_key, sha256_hash, display_prefix)."""
-    plain = API_KEY_PREFIX + uuid.uuid4().hex + uuid.uuid4().hex[:8]
-    return plain, hash_api_key(plain), plain[:10]
-
-
-def hash_api_key(plain: str) -> str:
-    return hashlib.sha256(plain.encode("utf-8")).hexdigest()
-
-
 # ---- symmetric encryption for stored secrets (e.g. GitHub token) ----
 
 def _fernet() -> Fernet:

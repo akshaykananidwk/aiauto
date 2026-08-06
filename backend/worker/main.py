@@ -1,9 +1,9 @@
 """AIAuto worker — runs on the master computer.
 
-Consumes the Redis queue, drives the AI providers (ChatGPT browser
-session and/or official APIs) with automatic failover, stores results
-and files, records token/cost usage, and publishes realtime status
-events. Run with:
+Consumes the Redis queue and processes every prompt through the ONE AI
+backend this platform uses: the master computer's logged-in ChatGPT Pro
+browser session (Playwright). Stores results and files and publishes
+realtime status events. Run with:
 
     python -m worker.main
 
@@ -33,88 +33,13 @@ from app.models.prompt import Prompt, PromptStatus
 from app.schemas.settings import AdminSettings
 from app.services import events
 from app.services.audit import audit
-from app.services.costs import estimate_cost, estimate_tokens
 from app.services.notify import NotificationService
 from app.services.queue import QueueService
 from app.services.redis_client import close_redis
-from worker.automation.base import (
-    AIProvider,
-    AIResult,
-    GenerationTimeoutError,
-    LoginExpiredError,
-)
-from worker.automation.docs import build_context_block
+from worker.automation.base import AIResult, GenerationTimeoutError, LoginExpiredError
+from worker.automation.chatgpt import ChatGPTProvider
 
 logger = get_logger("worker")
-
-API_PROVIDERS = ("openai", "anthropic", "gemini")
-
-
-def build_provider(name: str) -> AIProvider:
-    if name == "openai":
-        from worker.automation.openai_api import OpenAIAPIProvider
-
-        return OpenAIAPIProvider()
-    if name == "anthropic":
-        from worker.automation.anthropic_api import AnthropicProvider
-
-        return AnthropicProvider()
-    if name == "gemini":
-        from worker.automation.gemini_api import GeminiProvider
-
-        return GeminiProvider()
-    if name in ("browser", "api", ""):  # "api" kept for backwards compatibility
-        if name == "api":
-            from worker.automation.openai_api import OpenAIAPIProvider
-
-            return OpenAIAPIProvider()
-        from worker.automation.chatgpt import ChatGPTProvider
-
-        return ChatGPTProvider()
-    raise RuntimeError(f"unknown AI provider '{name}'")
-
-
-class ProviderPool:
-    """Lazily-constructed providers plus the configured failover order."""
-
-    def __init__(self) -> None:
-        self.settings = get_settings()
-        self._instances: dict[str, AIProvider] = {}
-
-    def default_chain(self) -> list[str]:
-        chain = [self.settings.ai_provider]
-        for name in (self.settings.ai_failover_chain or "").split(","):
-            name = name.strip()
-            if name and name not in chain:
-                chain.append(name)
-        return chain
-
-    def chain_for(self, requested: str) -> list[str]:
-        """Provider order for one job: explicit request first, then failover."""
-        if requested and requested != self.settings.ai_provider:
-            return [requested] + [p for p in self.default_chain() if p != requested]
-        return self.default_chain()
-
-    def get(self, name: str) -> AIProvider:
-        key = name or self.settings.ai_provider
-        if key not in self._instances:
-            self._instances[key] = build_provider(key)
-        return self._instances[key]
-
-    async def stop_all(self) -> None:
-        for provider in self._instances.values():
-            try:
-                await provider.stop()
-            except Exception:
-                pass
-
-    async def restart(self, name: str) -> None:
-        provider = self._instances.pop(name, None)
-        if provider is not None:
-            try:
-                await provider.stop()
-            except Exception:
-                pass
 
 
 class Worker:
@@ -125,7 +50,7 @@ class Worker:
             or f"{socket.gethostname()}-{os.getpid()}"
         )
         self.queue = QueueService()
-        self.pool = ProviderPool()
+        self.provider = ChatGPTProvider()
         self.stopping = asyncio.Event()
         self.current_job: str | None = None
 
@@ -134,11 +59,9 @@ class Worker:
     async def _heartbeat_loop(self) -> None:
         while not self.stopping.is_set():
             try:
-                primary = self.pool.get(self.settings.ai_provider)
-                healthy = await primary.healthy()
+                healthy = await self.provider.healthy()
                 await self.queue.register_heartbeat(
                     self.worker_id,
-                    provider=self.settings.ai_provider,
                     chrome="connected" if healthy else "disconnected",
                     current_job=self.current_job,
                 )
@@ -199,59 +122,17 @@ class Worker:
                 thumb_rel_path=thumb, mime_type=guess_mime(filename), size_bytes=size,
             ))
 
-    # ---------- job processing ----------
+    async def _restart_provider(self) -> None:
+        try:
+            await self.provider.stop()
+        except Exception:
+            pass
+        try:
+            await self.provider.start()
+        except Exception as exc:
+            logger.error("provider restart failed: %s", exc)
 
-    async def _run_with_failover(
-        self, prompt: Prompt, upload_paths: list[Path], admin: AdminSettings
-    ) -> tuple[AIResult, str]:
-        """Try providers in order; return (result, provider_name)."""
-        chain = self.pool.chain_for(prompt.provider)
-        last_error: Exception | None = None
-        for name in chain:
-            try:
-                provider = self.pool.get(name)
-            except RuntimeError as exc:  # not configured (missing API key etc.)
-                logger.info("provider %s unavailable: %s", name, exc)
-                last_error = exc
-                continue
-            try:
-                await provider.start()
-                if hasattr(provider, "delete_conversations"):
-                    provider.delete_conversations = admin.delete_conversations_after_run
-                prompt_text = prompt.prompt_text
-                if name in API_PROVIDERS and upload_paths and self.settings.enable_doc_extraction:
-                    # API providers that accept files natively still benefit from
-                    # plain-text context for formats they can't ingest
-                    context = build_context_block(
-                        [p for p in upload_paths
-                         if p.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp",
-                                                     ".gif", ".pdf")]
-                    )
-                    prompt_text = context + prompt_text
-                result = await asyncio.wait_for(
-                    provider.run_prompt(
-                        prompt_text,
-                        upload_paths,
-                        prompt.wants_image,
-                        admin.response_timeout_seconds,
-                    ),
-                    timeout=admin.job_timeout_seconds,
-                )
-                return result, name
-            except Exception as exc:
-                logger.warning("provider %s failed for prompt %s: %s", name, prompt.id, exc)
-                last_error = exc
-                if isinstance(exc, LoginExpiredError):
-                    with contextlib_suppress():
-                        await events.publish(events.WORKER_STATUS,
-                                             {"error": "login_expired", "message": str(exc)},
-                                             admin_only=True)
-                if name == "browser":
-                    await self.pool.restart(name)
-                if len(chain) > 1:
-                    continue
-                raise
-        raise last_error or RuntimeError("no AI provider is configured")
+    # ---------- job processing ----------
 
     async def _process(self, prompt_id: str) -> None:
         self.current_job = prompt_id
@@ -271,6 +152,7 @@ class Worker:
                     return
 
                 admin = await self._admin_settings(db)
+                self.provider.delete_conversations = admin.delete_conversations_after_run
 
                 # guarded waiting→processing transition: an API-side
                 # cancellation committed in this window must win
@@ -306,8 +188,16 @@ class Worker:
                 ]
 
                 try:
-                    result, provider_name = await self._run_with_failover(
-                        prompt, upload_paths, admin)
+                    await self.provider.start()
+                    result = await asyncio.wait_for(
+                        self.provider.run_prompt(
+                            prompt.prompt_text,
+                            upload_paths,
+                            prompt.wants_image,
+                            admin.response_timeout_seconds,
+                        ),
+                        timeout=admin.job_timeout_seconds,
+                    )
                 except Exception as exc:
                     await self._handle_failure(db, prompt, exc, admin)
                     return
@@ -315,17 +205,9 @@ class Worker:
                 await self._publish_safe(events.PROMPT_DOWNLOADING,
                                          {"prompt_id": prompt.id}, prompt.user_id)
 
-                input_tokens = result.input_tokens or estimate_tokens(prompt.prompt_text)
-                output_tokens = result.output_tokens or estimate_tokens(result.text)
                 claimed = await self._claim_terminal(db, prompt.id, {
                     "status": PromptStatus.completed,
                     "response_text": result.text,
-                    "provider": provider_name,
-                    "model": result.model,
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "cost_usd": estimate_cost(result.model, input_tokens, output_tokens,
-                                              images=len(result.images)),
                     "completed_at": datetime.now(timezone.utc),
                 })
                 if not claimed:
@@ -343,7 +225,7 @@ class Worker:
 
                 self._save_result_files(db, prompt, result)
                 await audit(db, "prompt.completed",
-                            f"prompt {prompt.id} completed via {provider_name} "
+                            f"prompt {prompt.id} completed "
                             f"({len(result.images)} images, {len(result.files)} files)",
                             user_id=prompt.user_id, meta={"prompt_id": prompt.id})
                 if prompt.user:
@@ -373,6 +255,10 @@ class Worker:
 
         if isinstance(exc, (GenerationTimeoutError, asyncio.TimeoutError)):
             error_msg = "The AI did not finish in time. The job can be retried."
+        if isinstance(exc, LoginExpiredError):
+            await self._publish_safe(
+                events.WORKER_STATUS,
+                {"error": "login_expired", "message": str(exc)}, None)
 
         # snapshot BEFORE rollback — rollback expires ORM instances and
         # expired attribute access raises MissingGreenlet under asyncio
@@ -383,6 +269,10 @@ class Worker:
         text_snippet = prompt.prompt_text[:80]
 
         await db.rollback()  # discard any partial state from the failed run
+
+        # reset the browser between failures — cheap insurance against a
+        # wedged page/session
+        await self._restart_provider()
 
         if retryable and retry_count < admin.job_retry_count:
             claimed = await self._claim_terminal(db, prompt_id_, {
@@ -434,13 +324,11 @@ class Worker:
     async def run(self) -> None:
         setup_logging()
         await init_db()
-        logger.info("worker %s starting (provider=%s, failover=%s)",
-                    self.worker_id, self.settings.ai_provider,
-                    self.settings.ai_failover_chain or "off")
+        logger.info("worker %s starting (ChatGPT browser automation)", self.worker_id)
         try:
-            await self.pool.get(self.settings.ai_provider).start()
+            await self.provider.start()
         except Exception as exc:
-            logger.error("primary provider start failed (will keep retrying): %s", exc)
+            logger.error("browser start failed (will keep retrying): %s", exc)
 
         heartbeat = asyncio.create_task(self._heartbeat_loop())
         try:
@@ -458,18 +346,12 @@ class Worker:
         finally:
             self.stopping.set()
             heartbeat.cancel()
-            await self.pool.stop_all()
+            await self.provider.stop()
             await close_redis()
             logger.info("worker stopped")
 
     def request_stop(self) -> None:
         self.stopping.set()
-
-
-def contextlib_suppress():
-    import contextlib
-
-    return contextlib.suppress(Exception)
 
 
 def main() -> None:

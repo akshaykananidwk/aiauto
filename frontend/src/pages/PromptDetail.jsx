@@ -84,15 +84,6 @@ export default function PromptDetail() {
             </div>
           </div>
           <div className="response-box">{prompt.response_text}</div>
-          {(prompt.provider || prompt.model) && (
-            <p className="muted" style={{ marginBottom: 0 }}>
-              {prompt.provider && <>Provider: {prompt.provider}</>}
-              {prompt.model && <> · Model: {prompt.model}</>}
-              {(prompt.input_tokens > 0 || prompt.output_tokens > 0) &&
-                <> · Tokens: {prompt.input_tokens}/{prompt.output_tokens}</>}
-              {prompt.cost_usd > 0 && <> · Est. cost: ${prompt.cost_usd}</>}
-            </p>
-          )}
         </div>
       )}
 

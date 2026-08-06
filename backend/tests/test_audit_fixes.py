@@ -4,24 +4,6 @@ from datetime import datetime, timedelta, timezone
 from tests.conftest import auth_headers
 
 
-async def test_api_key_cap_ignores_revoked_keys(client):
-    headers = await auth_headers(client, "bob")
-    created = []
-    for i in range(10):
-        res = await client.post("/api/v1/api-keys", headers=headers,
-                                json={"name": f"cap-test-{i}"})
-        assert res.status_code == 201
-        created.append(res.json())
-    # cap reached with 10 active keys
-    res = await client.post("/api/v1/api-keys", headers=headers, json={"name": "over-cap"})
-    assert res.status_code == 400
-    # revoking one frees a slot — revoked keys must not count forever
-    res = await client.delete(f"/api/v1/api-keys/{created[0]['id']}", headers=headers)
-    assert res.status_code == 200
-    res = await client.post("/api/v1/api-keys", headers=headers, json={"name": "after-revoke"})
-    assert res.status_code == 201
-
-
 async def test_pausing_and_resuming_once_schedule_keeps_run_time(client):
     headers = await auth_headers(client, "alice")
     run_at = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()

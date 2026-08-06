@@ -16,8 +16,6 @@ results of the internal audit performed during development.
 - **Brute-force lockout**: 5 failed logins (configurable) lock the account
   for 15 minutes; failed attempts are audit-logged. Login endpoints also
   have a stricter per-IP rate limit.
-- **API keys** are random 72-hex-char values stored only as SHA-256 hashes;
-  the plain key is displayed exactly once.
 
 ## Authorization
 
@@ -25,7 +23,7 @@ results of the internal audit performed during development.
   route — including router-level dependencies so a new endpoint cannot
   accidentally ship unprotected.
 - Staff can only read/cancel/retry **their own** prompts, files,
-  notifications, schedules and API keys; cross-user access returns 404
+  notifications and schedules; cross-user access returns 404
   (existence is not leaked). Covered by automated tests.
 - Staff cannot raise queue priority or see other users' data via any
   list endpoint (`all_users` is admin-only).
@@ -41,7 +39,7 @@ results of the internal audit performed during development.
   which neutralises classic CSRF. CORS is locked to configured origins.
 - **Clickjacking**: `X-Frame-Options: DENY`.
 - **SSRF**: the platform makes outbound requests only to configured
-  endpoints (GitHub API, AI provider APIs, admin-configured webhook/
+  endpoints (GitHub API, chatgpt.com, admin-configured webhook/
   Telegram). No user-supplied URLs are fetched.
 
 ## Files & paths

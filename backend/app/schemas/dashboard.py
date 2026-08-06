@@ -21,7 +21,6 @@ class WorkerStatus(BaseModel):
     worker_online: bool = False
     chrome_connected: bool = False
     playwright_ready: bool = False
-    provider: str = "browser"
     last_heartbeat: str | None = None
 
 

@@ -34,12 +34,12 @@ def spawn(name: str, cmd: list[str], cwd: Path) -> subprocess.Popen:
     return proc
 
 
-def wait_for_health(port: int, timeout: int = 60) -> dict | None:
+def wait_for_health(port: int, timeout: int = 90) -> dict | None:
     url = f"http://127.0.0.1:{port}/api/health"
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout=3) as resp:
+            with urllib.request.urlopen(url, timeout=8) as resp:
                 return json.loads(resp.read())
         except Exception:
             time.sleep(1)

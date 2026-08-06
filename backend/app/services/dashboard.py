@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
 from app.repositories.prompt import PromptRepository
 from app.repositories.user import UserRepository
 from app.schemas.dashboard import (
@@ -41,7 +40,6 @@ class DashboardService:
                 worker_online=worker["worker_online"],
                 chrome_connected=worker["chrome_connected"],
                 playwright_ready=worker["playwright_ready"],
-                provider=get_settings().ai_provider,
                 last_heartbeat=worker["last_heartbeat"],
             ),
         )

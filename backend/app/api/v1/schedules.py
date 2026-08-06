@@ -63,7 +63,6 @@ async def create_schedule(
         title=body.title,
         prompt_text=body.prompt_text,
         wants_image=body.wants_image,
-        provider=body.provider,
         schedule_type=body.schedule_type,
         interval_minutes=body.interval_minutes,
         run_at_time=body.run_at_time,

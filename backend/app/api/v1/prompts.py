@@ -56,14 +56,13 @@ async def submit_prompt(
     wants_image: bool = Form(False),
     priority: int = Form(0, ge=0, le=10),
     computer_name: str = Form("", max_length=128),
-    provider: str = Form("", max_length=32),
     files: list[UploadFile] = File(default=[]),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> PromptOut:
     data = PromptCreate(
         prompt_text=prompt_text, wants_image=wants_image,
-        priority=priority, computer_name=computer_name, provider=provider,
+        priority=priority, computer_name=computer_name,
     )
     try:
         prompt = await PromptService(db).submit(user, data, files)
@@ -94,7 +93,7 @@ async def export_my_history(
         payload = [
             {
                 "id": p.id, "prompt": p.prompt_text, "response": p.response_text,
-                "status": p.status.value, "provider": p.provider,
+                "status": p.status.value,
                 "created_at": p.created_at.isoformat(),
                 "files": [f.filename for f in p.files],
             }
@@ -106,9 +105,9 @@ async def export_my_history(
         )
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["id", "created_at", "status", "provider", "prompt", "response"])
+    writer.writerow(["id", "created_at", "status", "prompt", "response"])
     for p in items:
-        writer.writerow([p.id, p.created_at.isoformat(), p.status.value, p.provider,
+        writer.writerow([p.id, p.created_at.isoformat(), p.status.value,
                          p.prompt_text, p.response_text or ""])
     return Response(
         buf.getvalue(), media_type="text/csv",

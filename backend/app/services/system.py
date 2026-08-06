@@ -70,7 +70,6 @@ class SystemService:
                 out.append({
                     "id": worker_id,
                     "heartbeat": raw.get("heartbeat"),
-                    "provider": raw.get("provider", ""),
                     "chrome": raw.get("chrome", "unknown"),
                     "current_job": raw.get("current_job") or None,
                 })

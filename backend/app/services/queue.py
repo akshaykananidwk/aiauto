@@ -74,14 +74,13 @@ class QueueService:
 
     # ---- worker registry (supports multiple workers) ----
     async def register_heartbeat(
-        self, worker_id: str, *, provider: str, chrome: str, current_job: str | None
+        self, worker_id: str, *, chrome: str, current_job: str | None
     ) -> None:
         key = WORKERS_PREFIX + worker_id
         from datetime import datetime, timezone
 
         await self.redis.hset(key, mapping={
             "heartbeat": datetime.now(timezone.utc).isoformat(),
-            "provider": provider,
             "chrome": chrome,
             "current_job": current_job or "",
         })

@@ -24,7 +24,6 @@ class ScheduledPrompt(TimestampMixin, Base):
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     prompt_text: Mapped[str] = mapped_column(Text, nullable=False)
     wants_image: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    provider: Mapped[str] = mapped_column(String(32), default="", nullable=False)
     schedule_type: Mapped[ScheduleType] = mapped_column(
         Enum(ScheduleType, name="schedule_type"), nullable=False
     )

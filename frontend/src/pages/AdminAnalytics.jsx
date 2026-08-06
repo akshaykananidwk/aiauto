@@ -28,9 +28,7 @@ export default function AdminAnalytics() {
 
       <div className="grid cols-4" style={{ marginBottom: 20 }}>
         <div className="stat"><div className="label">Prompts</div><div className="value">{t.prompts}</div></div>
-        <div className="stat"><div className="label">Tokens</div>
-          <div className="value">{((t.input_tokens + t.output_tokens) / 1000).toFixed(1)}k</div></div>
-        <div className="stat"><div className="label">Est. Cost</div><div className="value">${t.cost}</div></div>
+        <div className="stat"><div className="label">Images Generated</div><div className="value">{t.images}</div></div>
         <div className="stat"><div className="label">Avg. Processing</div>
           <div className="value">{t.avg_processing_seconds ? `${t.avg_processing_seconds}s` : '—'}</div></div>
       </div>
@@ -46,41 +44,22 @@ export default function AdminAnalytics() {
           <HBarList data={data.top_users.map(u => ({ ...u, label: u.full_name || u.username }))}
             labelKey="label" valueKey="prompts" />
           <table style={{ marginTop: 12 }}>
-            <thead><tr><th>User</th><th>Prompts</th><th>Tokens</th><th>Cost</th></tr></thead>
+            <thead><tr><th>User</th><th>Department</th><th>Prompts</th></tr></thead>
             <tbody>
               {data.top_users.map(u => (
                 <tr key={u.username}>
-                  <td>{u.full_name || u.username}<div className="muted">{u.department}</div></td>
+                  <td>{u.full_name || u.username}</td>
+                  <td className="muted">{u.department || '—'}</td>
                   <td>{u.prompts}</td>
-                  <td>{(u.tokens / 1000).toFixed(1)}k</td>
-                  <td>${u.cost}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
 
-        <div>
-          <div className="card">
-            <h2>By Department</h2>
-            <HBarList data={data.by_department} labelKey="department" valueKey="prompts" />
-          </div>
-          <div className="card">
-            <h2>By AI Provider</h2>
-            <table>
-              <thead><tr><th>Provider</th><th>Prompts</th><th>Tokens in/out</th><th>Cost</th></tr></thead>
-              <tbody>
-                {data.by_provider.map(p => (
-                  <tr key={p.provider}>
-                    <td>{p.provider}</td>
-                    <td>{p.prompts}</td>
-                    <td className="muted">{(p.input_tokens / 1000).toFixed(1)}k / {(p.output_tokens / 1000).toFixed(1)}k</td>
-                    <td>${p.cost}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+        <div className="card">
+          <h2>By Department</h2>
+          <HBarList data={data.by_department} labelKey="department" valueKey="prompts" />
         </div>
       </div>
 

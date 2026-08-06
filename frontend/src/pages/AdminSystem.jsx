@@ -79,19 +79,18 @@ export default function AdminSystem() {
       <div className="card">
         <h2>Workers</h2>
         <table>
-          <thead><tr><th>Worker</th><th>Provider</th><th>Chrome</th><th>Current job</th><th>Heartbeat</th></tr></thead>
+          <thead><tr><th>Worker</th><th>Chrome</th><th>Current job</th><th>Heartbeat</th></tr></thead>
           <tbody>
             {health.workers.map(w => (
               <tr key={w.id}>
                 <td><b>{w.id}</b></td>
-                <td>{w.provider}</td>
                 <td><span className={`badge ${w.chrome === 'connected' ? 'online' : 'offline'}`}>{w.chrome}</span></td>
                 <td className="muted">{w.current_job || 'idle'}</td>
                 <td className="muted">{w.heartbeat ? new Date(w.heartbeat).toLocaleTimeString() : '—'}</td>
               </tr>
             ))}
             {health.workers.length === 0 && (
-              <tr><td colSpan={5} className="muted">No workers online — start the worker on the master computer.</td></tr>
+              <tr><td colSpan={4} className="muted">No workers online — start the worker on the master computer.</td></tr>
             )}
           </tbody>
         </table>

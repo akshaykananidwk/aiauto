@@ -270,10 +270,4 @@ class ChatGPTProvider:
         if self.delete_conversations:
             await self._delete_conversation(page)
 
-        from app.services.costs import estimate_tokens
-
-        return AIResult(
-            text=text, images=images, files=files, model="chatgpt-web",
-            input_tokens=estimate_tokens(prompt_text),
-            output_tokens=estimate_tokens(text),
-        )
+        return AIResult(text=text, images=images, files=files)

@@ -36,7 +36,6 @@ export default function AdminHome() {
             Chrome {w.chrome_connected ? 'connected' : 'disconnected'}</span>
           <span className={`badge ${w.playwright_ready ? 'online' : 'offline'}`}>
             Playwright {w.playwright_ready ? 'ready' : 'not ready'}</span>
-          <span className="badge processing">Provider: {w.provider}</span>
           {w.last_heartbeat && <span className="muted">last heartbeat {new Date(w.last_heartbeat).toLocaleTimeString()}</span>}
         </div>
       </div>

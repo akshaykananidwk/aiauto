@@ -20,7 +20,6 @@ export default function StaffHome() {
     return draft
   })
   const [wantsImage, setWantsImage] = useState(false)
-  const [provider, setProvider] = useState('')
   const [files, setFiles] = useState([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -85,7 +84,6 @@ export default function StaffHome() {
       const fd = new FormData()
       fd.append('prompt_text', text)
       fd.append('wants_image', wantsImage)
-      fd.append('provider', provider)
       fd.append('computer_name', navigator.userAgent.slice(0, 120))
       for (const f of files) fd.append('files', f)
       await api('/prompts', { method: 'POST', formData: fd })
@@ -139,14 +137,6 @@ export default function StaffHome() {
                   checked={wantsImage} onChange={e => setWantsImage(e.target.checked)} />
                 &nbsp;Generate image
               </label>
-              <select style={{ width: 'auto' }} value={provider} title="AI provider"
-                onChange={e => setProvider(e.target.value)}>
-                <option value="">Auto (default)</option>
-                <option value="browser">ChatGPT (browser)</option>
-                <option value="openai">OpenAI API</option>
-                <option value="anthropic">Claude API</option>
-                <option value="gemini">Gemini API</option>
-              </select>
               <input type="file" multiple ref={fileInput} style={{ width: 'auto' }}
                 onChange={e => setFiles([...e.target.files])} />
               <Link to="/templates" className="muted">📚 Templates</Link>
