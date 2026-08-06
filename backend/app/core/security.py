@@ -69,6 +69,34 @@ def token_remaining_seconds(payload: dict[str, Any]) -> int:
     return max(0, int(exp - datetime.now(timezone.utc).timestamp()))
 
 
+# ---- platform API keys (for OUR public REST API, not any AI provider) ----
+
+API_KEY_PREFIX = "ak_"
+
+
+def generate_api_key() -> tuple[str, str, str]:
+    """Returns (plain_key, sha256_hash, display_prefix)."""
+    plain = API_KEY_PREFIX + uuid.uuid4().hex + uuid.uuid4().hex[:8]
+    return plain, hash_api_key(plain), plain[:10]
+
+
+def hash_api_key(plain: str) -> str:
+    return hashlib.sha256(plain.encode("utf-8")).hexdigest()
+
+
+def generate_webhook_secret() -> str:
+    return "whsec_" + uuid.uuid4().hex
+
+
+def sign_webhook(secret: str, timestamp: str, body: bytes) -> str:
+    """HMAC-SHA256 signature for webhook deliveries. The timestamp is part
+    of the signed payload so consumers can reject replays."""
+    import hmac
+
+    message = timestamp.encode("utf-8") + b"." + body
+    return hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
 # ---- symmetric encryption for stored secrets (e.g. GitHub token) ----
 
 def _fernet() -> Fernet:

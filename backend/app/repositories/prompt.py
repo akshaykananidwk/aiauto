@@ -22,6 +22,8 @@ class PromptRepository:
         user_id: int | None = None,
         status: PromptStatus | None = None,
         search: str | None = None,
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
         page: int = 1,
         page_size: int = 20,
     ) -> tuple[list[Prompt], int]:
@@ -37,6 +39,12 @@ class PromptRepository:
             like = f"%{search}%"
             stmt = stmt.where(Prompt.prompt_text.ilike(like))
             count_stmt = count_stmt.where(Prompt.prompt_text.ilike(like))
+        if created_after is not None:
+            stmt = stmt.where(Prompt.created_at >= created_after)
+            count_stmt = count_stmt.where(Prompt.created_at >= created_after)
+        if created_before is not None:
+            stmt = stmt.where(Prompt.created_at <= created_before)
+            count_stmt = count_stmt.where(Prompt.created_at <= created_before)
         stmt = (
             stmt.order_by(Prompt.created_at.desc())
             .offset((page - 1) * page_size)

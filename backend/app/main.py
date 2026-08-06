@@ -43,13 +43,15 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title=settings.app_name,
-    version="1.1.0",
+    version="1.3.0",
     description="Central AI automation platform: staff submit prompts, a queue "
     "dispatches them to the master computer's managed ChatGPT Pro browser "
     "session, and results (text, images, files) come back — without staff "
-    "ever touching the account.",
+    "ever touching the account. The public REST API (X-API-Key) lets your "
+    "own websites, ERPs, CRMs and apps integrate with the platform.",
     lifespan=lifespan,
     docs_url="/api/docs",
+    redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
 )
 
@@ -65,6 +67,41 @@ app.add_middleware(
 )
 
 app.include_router(api_router, prefix=settings.api_prefix)
+
+from app.api.public_v1 import router as public_router  # noqa: E402
+
+app.include_router(public_router)
+
+
+@app.middleware("http")
+async def record_public_api_usage(request, call_next):
+    """Success/error counters per API key for the developer dashboard."""
+    response = await call_next(request)
+    key_id = getattr(request.state, "api_key_id", None)
+    if key_id is not None:
+        from app.services.api_usage import record_request
+
+        try:
+            await record_request(key_id, response.status_code < 400)
+        except Exception:
+            pass
+        remaining = getattr(request.state, "api_rate_remaining", None)
+        if remaining is not None:
+            response.headers["X-RateLimit-Remaining"] = str(remaining)
+    return response
+
+
+@app.get("/api/openapi.yaml", include_in_schema=False)
+async def openapi_yaml():
+    """The OpenAPI spec as downloadable YAML (JSON is at /api/openapi.json)."""
+    import yaml
+    from fastapi.responses import Response
+
+    return Response(
+        yaml.safe_dump(app.openapi(), sort_keys=False, allow_unicode=True),
+        media_type="application/yaml",
+        headers={"Content-Disposition": "attachment; filename=aiauto-openapi.yaml"},
+    )
 
 
 @app.get("/api/health")
@@ -86,8 +123,24 @@ async def health() -> dict:
         redis_ok = bool(await asyncio.wait_for(get_redis().ping(), timeout=2))
     except Exception:
         pass
+    worker_online = chrome_connected = False
+    try:
+        from app.services.queue import QueueService
+
+        ws = await asyncio.wait_for(QueueService().worker_status(), timeout=2)
+        worker_online = ws["worker_online"]
+        chrome_connected = ws["chrome_connected"]
+    except Exception:
+        pass
     status = "ok" if (db_ok and redis_ok) else "degraded"
-    return {"status": status, "app": settings.app_name, "database": db_ok, "redis": redis_ok}
+    return {
+        "status": status,
+        "app": settings.app_name,
+        "database": db_ok,
+        "redis": redis_ok,
+        "worker": worker_online,
+        "chrome": chrome_connected,
+    }
 
 
 # Serve the built frontend (single-process deployments); nginx handles this

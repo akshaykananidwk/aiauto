@@ -8,6 +8,8 @@ from app.models.template import PromptTemplate, TemplateFavorite
 from app.models.schedule import ScheduledPrompt, ScheduleType
 from app.models.notification import Notification
 from app.models.quota import DepartmentQuota
+from app.models.apikey import ApiKey
+from app.models.webhook import Webhook
 
 __all__ = [
     "User",
@@ -26,4 +28,6 @@ __all__ = [
     "ScheduleType",
     "Notification",
     "DepartmentQuota",
+    "ApiKey",
+    "Webhook",
 ]

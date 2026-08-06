@@ -8,6 +8,7 @@ import PromptDetail from './pages/PromptDetail'
 import Templates from './pages/Templates'
 import Scheduled from './pages/Scheduled'
 import Notifications from './pages/Notifications'
+import Developer from './pages/Developer'
 import AdminHome from './pages/AdminHome'
 import AdminQueue from './pages/AdminQueue'
 import AdminUsers from './pages/AdminUsers'
@@ -61,6 +62,7 @@ function Shell({ children }) {
       <NavLink to="/" end onClick={() => setMenuOpen(false)}>Dashboard</NavLink>
       <NavLink to="/templates" onClick={() => setMenuOpen(false)}>Templates</NavLink>
       <NavLink to="/scheduled" onClick={() => setMenuOpen(false)}>Scheduled</NavLink>
+      <NavLink to="/developer" onClick={() => setMenuOpen(false)}>API</NavLink>
       {isAdmin && <NavLink to="/queue" onClick={() => setMenuOpen(false)}>Queue</NavLink>}
       {isAdmin && <NavLink to="/users" onClick={() => setMenuOpen(false)}>Users</NavLink>}
       {isAdmin && <NavLink to="/analytics" onClick={() => setMenuOpen(false)}>Analytics</NavLink>}
@@ -138,6 +140,7 @@ export default function App() {
           <Route path="/templates" element={<Protected><Templates /></Protected>} />
           <Route path="/scheduled" element={<Protected><Scheduled /></Protected>} />
           <Route path="/notifications" element={<Protected><Notifications /></Protected>} />
+          <Route path="/developer" element={<Protected><Developer /></Protected>} />
           <Route path="/queue" element={<Protected admin><AdminQueue /></Protected>} />
           <Route path="/users" element={<Protected admin><AdminUsers /></Protected>} />
           <Route path="/analytics" element={<Protected admin><AdminAnalytics /></Protected>} />

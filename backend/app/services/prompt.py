@@ -91,6 +91,13 @@ class PromptService:
             user_id=user.id,
         )
         await events.publish(events.QUEUE_UPDATED, {"size": position}, admin_only=True)
+        from app.services import webhooks
+
+        await webhooks.dispatch(user.id, "job.submitted", {
+            "job_id": prompt.id,
+            "type": "image" if prompt.wants_image else "text",
+            "queue_position": position,
+        })
         return prompt
 
     async def cancel(self, prompt: Prompt, by_user: User) -> Prompt:

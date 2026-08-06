@@ -106,6 +106,14 @@ class Worker:
         except Exception as exc:
             logger.warning("event publish failed (non-fatal): %s", exc)
 
+    async def _webhook_safe(self, user_id: int, event: str, payload: dict) -> None:
+        try:
+            from app.services import webhooks
+
+            await webhooks.dispatch(user_id, event, payload)
+        except Exception as exc:
+            logger.warning("webhook dispatch failed (non-fatal): %s", exc)
+
     def _save_result_files(self, db, prompt: Prompt, result: AIResult) -> None:
         """Persist result artifacts. Every file is verified on disk before
         its DB row is added — a prompt is never 'completed' pointing at a
@@ -191,6 +199,8 @@ class Worker:
                 await db.refresh(prompt)
                 await self._publish_safe(events.PROMPT_PROCESSING,
                                          {"prompt_id": prompt.id}, prompt.user_id)
+                await self._webhook_safe(prompt.user_id, "job.started",
+                                         {"job_id": prompt.id})
                 if prompt.wants_image:
                     await self._publish_safe(events.PROMPT_GENERATING_IMAGE,
                                              {"prompt_id": prompt.id}, prompt.user_id)
@@ -274,6 +284,18 @@ class Worker:
                      "images": len(result.images), "files": len(result.files)},
                     prompt.user_id,
                 )
+                await self._webhook_safe(prompt.user_id, "job.completed", {
+                    "job_id": prompt.id, "status": "completed",
+                    "images": len(result.images), "files": len(result.files),
+                })
+                if result.images:
+                    await self._webhook_safe(prompt.user_id, "image.ready",
+                                             {"job_id": prompt.id,
+                                              "images": len(result.images)})
+                if result.files:
+                    await self._webhook_safe(prompt.user_id, "file.ready",
+                                             {"job_id": prompt.id,
+                                              "files": len(result.files)})
         finally:
             self.current_job = None
 
@@ -349,6 +371,8 @@ class Worker:
         await self._publish_safe(events.PROMPT_FAILED,
                                  {"prompt_id": prompt_id_, "error": error_msg},
                                  user_id_)
+        await self._webhook_safe(user_id_, "job.failed",
+                                 {"job_id": prompt_id_, "error": error_msg})
 
     # ---------- main loop ----------
 

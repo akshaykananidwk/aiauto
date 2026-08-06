@@ -42,6 +42,10 @@ Staff PC ◀── WebSocket live status ◀────┘
   Telegram, webhooks (Slack/WhatsApp gateways), desktop notifications.
 - **Operations**: one-click GitHub updates with auto-backup + rollback,
   scheduled backups, restore wizard, system health monitoring, plugins.
+- **Public REST API**: your customers' apps, ERPs and CRMs integrate via
+  API keys (scopes, expiry, IP allowlists, rate limits), async jobs,
+  signed webhooks, Swagger/ReDoc docs and SDK examples — all processed
+  by the same central ChatGPT session.
 - **Modern UI**: React, dark/light theme, mobile-responsive, installable PWA.
 
 ## Quick start (one command)
@@ -73,8 +77,12 @@ Frontend: http://localhost:8080 · API: http://localhost:8000
 
 The worker that drives ChatGPT runs natively where Chrome is logged in:
 
-1. `scripts\start_master_chrome.bat` → log into ChatGPT Pro once
-2. `start.bat --with-worker` (or `scripts\run_worker.bat`)
+Just double-click `start.bat` — it starts Redis, the backend, Chrome
+(with the dedicated logged-in profile; reconnects instead of opening
+duplicates) and the worker, then verifies everything before printing
+**System Ready**. Log into ChatGPT Pro once in the Chrome window it
+opens; the profile remembers it. On a central server without Chrome,
+use `start.bat --server-only`.
 
 See [docs/INSTALLATION.md](docs/INSTALLATION.md) for details.
 
@@ -109,7 +117,7 @@ docs/             installation, deployment, API, update system
 - [Feature list](FEATURES.md)
 - [Installation guide](docs/INSTALLATION.md)
 - [Deployment guide](docs/DEPLOYMENT.md) — HTTPS, services, scaling
-- [API reference](docs/API.md)
+- [API reference](docs/API.md) (internal) · [Public API guide](docs/PUBLIC_API.md) + [SDK examples](docs/sdk-examples/)
 - [Update system](docs/UPDATE_SYSTEM.md) — one-click updates & rollback
 - [Security overview](SECURITY.md)
 - [Changelog](CHANGELOG.md)

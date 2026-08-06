@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.3.0 — Public platform API + one-click startup
+
+### Public REST API (`/api/public/v1`)
+- API keys per user: create/rename/regenerate/disable/delete, scoped
+  permissions, expiry dates, IP allowlists, per-key rate limits, usage
+  statistics; keys hashed at rest and shown exactly once
+- Async job endpoints: submit text/image jobs (JSON) or jobs with file
+  uploads (multipart), poll status/progress, cancel, retry, list with
+  status/type/date filters and pagination, download result files
+- Webhooks: job.submitted/started/completed/failed, image.ready,
+  file.ready — HMAC-SHA256 signed with timestamp replay protection and
+  automatic retries (10s/60s backoff)
+- Developer portal page in the web app: keys, webhooks (test button),
+  usage dashboard with daily chart
+- Docs: docs/PUBLIC_API.md guide, SDK examples (Python, Node.js/React,
+  PHP/Laravel, C#, Kotlin, Flutter), Swagger explorer, ReDoc, OpenAPI
+  JSON + YAML downloads
+- All jobs processed exclusively by the central ChatGPT browser worker —
+  no external AI provider anywhere
+
+### One-click startup
+- start.bat now does EVERYTHING: verifies environment + config, starts
+  Redis (Windows service or local binary) if it is not running, starts
+  the backend, opens Chrome with the dedicated logged-in profile and
+  remote debugging (reconnecting instead of opening duplicate windows),
+  starts the browser-automation worker, and verifies every component
+  (DB, Redis, backend, worker, Chrome) before printing "System Ready"
+- /api/health now reports worker and Chrome status; crashed services
+  are restarted automatically; clear per-step errors on failure
+- `--server-only` runs the central server without Chrome/worker
+
 ## 1.2.1 — Image pipeline reliability
 
 Root-cause fix for generated images not reaching the website:

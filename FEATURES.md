@@ -2,7 +2,9 @@
 
 All processing runs through ONE AI backend: the master computer's
 logged-in **ChatGPT Pro browser session**. There are no external AI API
-integrations anywhere in the platform — no API keys, no per-token costs.
+integrations anywhere — no third-party AI keys, no per-token costs.
+(The platform exposes its OWN public REST API so your apps can integrate
+with it; that API also runs everything through the same ChatGPT session.)
 
 ## Core platform
 
@@ -95,14 +97,28 @@ integrations anywhere in the platform — no API keys, no per-token costs.
 66. **Announcement banner** — admin broadcast to every user
 67. **Structured rotating logs** + audit log with filters
 
+## Public REST API (your own platform's API)
+
+77. **Public API** (`/api/public/v1`) — integrate websites, ERP, CRM, desktop and mobile apps; all jobs processed by the central ChatGPT session
+78. **API key management** — create, rename, regenerate, disable, delete; keys hashed at rest, shown once
+79. **Key permissions (scopes)** — jobs:read / jobs:write / files:read / webhooks:manage
+80. **Key expiry dates, IP allowlists and per-key rate limits**
+81. **Usage statistics** — per-key request counts, success/failure, last used, daily chart
+82. **Async job API** — submit text/image jobs, poll status + progress, cancel, retry, list with filters (status/type/date), download results
+83. **File upload API** — multipart uploads (images, PDF, DOCX, XLSX, TXT, ZIP) with validation
+84. **Webhooks** — job.submitted/started/completed/failed, image.ready, file.ready; HMAC-SHA256 signatures, timestamp replay protection, automatic retries
+85. **Developer dashboard** — keys, webhooks, usage charts in the web app
+86. **Interactive API explorer** (Swagger UI) + **ReDoc** + downloadable OpenAPI **JSON/YAML**
+87. **SDK examples** — Python, Node.js/React, PHP/Laravel, C#, Kotlin (Android), Flutter
+88. **Developer guide** — auth, errors, rate limits, pagination, webhook verification, best practices (docs/PUBLIC_API.md)
+
 ## Deployment & DX
 
-68. **One-command setup** — `./setup.sh` / `setup.bat` (venv, deps, .env, DB, admin, frontend)
-69. **One-command start** — `./start.sh` / `start.bat` with health verification ("System Ready")
-70. **.env auto-creation** on first run with generated SECRET_KEY
-71. **Docker Compose stack** (PostgreSQL, Redis, backend, frontend)
-72. **Single-process mode** — backend serves the built frontend directly
-73. **Dark/light theme**, **mobile-responsive UI**, **PWA** (installable, offline shell)
-74. **70+ automated tests** — auth, isolation, quotas, templates, queue math, update safety
-75. **Load-test script** (`scripts/loadtest.py`)
-76. **OpenAPI docs** at `/api/docs`
+89. **One-click startup** — `start.bat` alone starts Redis, backend, Chrome (reusing the logged-in profile, no duplicate windows), the worker, and verifies every component before printing "System Ready"
+90. **One-command setup** — `./setup.sh` / `setup.bat` (venv, deps, .env, DB, admin, frontend)
+91. **.env auto-creation** on first run with generated SECRET_KEY
+92. **Docker Compose stack** (PostgreSQL, Redis, backend, frontend)
+93. **Single-process mode** — backend serves the built frontend directly
+94. **Dark/light theme**, **mobile-responsive UI**, **PWA** (installable, offline shell)
+95. **78 automated tests** — auth, isolation, quotas, templates, public API, queue math, update safety
+96. **Load-test script** (`scripts/loadtest.py`)

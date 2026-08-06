@@ -1,22 +1,34 @@
 #!/usr/bin/env python3
-"""AIAuto one-command start.
+"""AIAuto one-click start — the ONLY file you need to run.
 
-    python scripts/start.py [--with-worker] [--port 8000]
+    Double-click start.bat (or run: python scripts/start.py)
 
-Starts the backend API (which serves the built frontend, the WebSocket
-hub and the scheduler), optionally the AI worker, verifies every service
-is healthy, then reports "System Ready". Ctrl+C stops everything.
+It automatically, in order:
+  1. verifies the environment (venv, configuration; .env auto-created)
+  2. starts Redis if it isn't running (Windows service / local binary)
+  3. starts the backend (API + frontend + scheduler + WebSocket)
+  4. opens Chrome with the dedicated profile and remote debugging —
+     reconnecting to an existing window instead of opening duplicates
+  5. starts the browser-automation worker
+  6. verifies EVERY component (DB, Redis, backend, worker, Chrome)
+  and only then prints "System Ready".
+
+Flags:
+  --server-only   central server without Chrome/worker (worker runs elsewhere)
+  --no-chrome     start the worker but do not launch/verify Chrome here
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import socket
 import subprocess
 import sys
 import time
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend"
@@ -24,103 +36,24 @@ IS_WINDOWS = os.name == "nt"
 VENV_PY = BACKEND / ".venv" / ("Scripts" if IS_WINDOWS else "bin") / (
     "python.exe" if IS_WINDOWS else "python")
 
+OK, WARN, FAIL = "✔", "⚠", "✘"
 procs: list[tuple[str, subprocess.Popen]] = []
+CFG: dict = {}
+
+
+def say(mark: str, msg: str) -> None:
+    print(f"  {mark} {msg}")
 
 
 def spawn(name: str, cmd: list[str], cwd: Path) -> subprocess.Popen:
-    print(f"  ▶ starting {name}…")
+    say("▶", f"starting {name}…")
     proc = subprocess.Popen([str(c) for c in cmd], cwd=cwd)
     procs.append((name, proc))
     return proc
 
 
-def wait_for_health(port: int, timeout: int = 90) -> dict | None:
-    url = f"http://127.0.0.1:{port}/api/health"
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            with urllib.request.urlopen(url, timeout=8) as resp:
-                return json.loads(resp.read())
-        except Exception:
-            time.sleep(1)
-    return None
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--with-worker", action="store_true",
-                        help="also run the AI worker on this machine")
-    parser.add_argument("--host", default="0.0.0.0")
-    args = parser.parse_args()
-
-    if not VENV_PY.exists():
-        print("Backend virtual environment missing — run: python scripts/setup.py")
-        return 1
-
-    print("┌──────────────────────────────────────────────┐")
-    print("│  AIAuto — starting services                  │")
-    print("└──────────────────────────────────────────────┘")
-
-    spawn("backend (API + frontend + scheduler + WebSocket)",
-          [VENV_PY, "-m", "uvicorn", "app.main:app",
-           "--host", args.host, "--port", str(args.port)], BACKEND)
-
-    print("  … waiting for the backend to become healthy")
-    health = wait_for_health(args.port)
-    if health is None:
-        print("  ✘ backend did not become healthy within 60 s — check logs/aiauto.log")
-        stop_all()
-        return 1
-    print(f"  ✔ backend healthy (database={'OK' if health['database'] else 'FAIL'}, "
-          f"redis={'OK' if health['redis'] else 'FAIL'})")
-    if not health["database"]:
-        print("  ✘ database unreachable — fix DATABASE_URL in .env")
-        stop_all()
-        return 1
-    if not health["redis"]:
-        print("  ⚠ Redis unreachable — queue and realtime updates will not work "
-              "until Redis is up (docker compose up -d redis)")
-
-    if args.with_worker:
-        spawn("worker (AI automation)", [VENV_PY, "-m", "worker.main"], BACKEND)
-        time.sleep(2)
-
-    frontend_note = "" if (ROOT / "frontend" / "dist").is_dir() else \
-        "  ⚠ frontend/dist missing — run setup with Node installed for the web UI\n"
-    print(f"""
-══════════════════════════════════════════════════
-  ✔ System Ready
-══════════════════════════════════════════════════
-{frontend_note}  Web app:    http://localhost:{args.port}
-  API docs:   http://localhost:{args.port}/api/docs
-  Health:     http://localhost:{args.port}/api/health
-{'' if args.with_worker else '  Worker:     start it on the master computer (scripts/run_worker.bat)'}
-  Press Ctrl+C to stop.
-""")
-    try:
-        while True:
-            for name, proc in procs:
-                code = proc.poll()
-                if code is not None:
-                    print(f"  ✘ {name} exited with code {code} — restarting in 3 s")
-                    time.sleep(3)
-                    procs.remove((name, proc))
-                    if "backend" in name:
-                        spawn(name, [VENV_PY, "-m", "uvicorn", "app.main:app",
-                                     "--host", args.host, "--port", str(args.port)], BACKEND)
-                    else:
-                        spawn(name, [VENV_PY, "-m", "worker.main"], BACKEND)
-                    break
-            time.sleep(2)
-    except KeyboardInterrupt:
-        print("\nStopping…")
-        stop_all()
-    return 0
-
-
 def stop_all() -> None:
-    for name, proc in procs:
+    for _name, proc in procs:
         if proc.poll() is None:
             proc.terminate()
     for _name, proc in procs:
@@ -128,6 +61,288 @@ def stop_all() -> None:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
+
+
+def die(msg: str) -> None:
+    print(f"\n{FAIL} STARTUP FAILED: {msg}")
+    print("  Started services were stopped. Fix the problem and run start again.")
+    stop_all()
+    sys.exit(1)
+
+
+# ---------- step 1: environment + configuration ----------
+
+def load_config() -> dict:
+    if not VENV_PY.exists():
+        die("backend virtual environment missing — run setup first "
+            f"({'setup.bat' if IS_WINDOWS else './setup.sh'})")
+    code = (
+        "import json\n"
+        "from app.core.config import get_settings\n"
+        "s = get_settings()\n"
+        "print(json.dumps({'redis_url': s.redis_url, 'cdp': s.chrome_cdp_url,\n"
+        "  'profile': s.chrome_profile_dir, 'chatgpt': s.chatgpt_url,\n"
+        "  'env': s.env}))"
+    )
+    result = subprocess.run([str(VENV_PY), "-c", code], cwd=BACKEND,
+                            capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        print(result.stderr[-1200:])
+        die("configuration is invalid — check .env")
+    cfg = json.loads(result.stdout.strip().splitlines()[-1])
+    say(OK, "environment verified, configuration valid (.env loaded)")
+    return cfg
+
+
+# ---------- step 2: Redis ----------
+
+def redis_reachable(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=2):
+            return True
+    except OSError:
+        return False
+
+
+def try_start_redis() -> None:
+    if IS_WINDOWS:
+        for service in ("Memurai", "Redis"):
+            subprocess.run(["net", "start", service], capture_output=True, timeout=60)
+        for binary in ("memurai.exe", "redis-server.exe", "redis-server"):
+            try:
+                subprocess.Popen([binary], stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL,
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                break
+            except FileNotFoundError:
+                continue
+    else:
+        subprocess.run(["redis-server", "--daemonize", "yes"], capture_output=True)
+
+
+def ensure_redis() -> None:
+    parsed = urlparse(CFG["redis_url"])
+    host, port = parsed.hostname or "localhost", parsed.port or 6379
+    if redis_reachable(host, port):
+        say(OK, f"Redis running ({host}:{port})")
+        return
+    if host not in ("localhost", "127.0.0.1"):
+        die(f"Redis at {host}:{port} is unreachable (remote — start it there)")
+    say(WARN, "Redis not running — starting it…")
+    try_start_redis()
+    for _ in range(10):
+        if redis_reachable(host, port):
+            say(OK, "Redis started")
+            return
+        time.sleep(1)
+    die("could not start Redis automatically.\n"
+        "  Install it as a service (see docs/INSTALLATION.md → 'Redis on Windows'):\n"
+        "  easiest: Memurai (https://www.memurai.com) — installs as an auto-start service")
+
+
+# ---------- step 3/6: backend + health ----------
+
+def fetch_health(port: int) -> dict | None:
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health",
+                                    timeout=8) as resp:
+            return json.loads(resp.read())
+    except Exception:
+        return None
+
+
+def wait_health(port: int, predicate, timeout: int, what: str) -> dict | None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        health = fetch_health(port)
+        if health and predicate(health):
+            return health
+        time.sleep(1.5)
+    return None
+
+
+# ---------- step 4: Chrome ----------
+
+def cdp_alive(cdp_url: str) -> bool:
+    try:
+        with urllib.request.urlopen(f"{cdp_url.rstrip('/')}/json/version", timeout=2):
+            return True
+    except Exception:
+        return False
+
+
+def find_chrome() -> str | None:
+    if IS_WINDOWS:
+        candidates = [
+            Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+            / "Google/Chrome/Application/chrome.exe",
+            Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"))
+            / "Google/Chrome/Application/chrome.exe",
+            Path(os.environ.get("LocalAppData", "")) / "Google/Chrome/Application/chrome.exe",
+        ]
+        for path in candidates:
+            if path.is_file():
+                return str(path)
+        return None
+    import shutil
+
+    for name in ("google-chrome", "chromium", "chromium-browser"):
+        path = shutil.which(name)
+        if path:
+            return path
+    return None
+
+
+def ensure_chrome() -> bool:
+    cdp = CFG["cdp"] or "http://localhost:9222"
+    if cdp_alive(cdp):
+        say(OK, "Chrome already running with remote debugging — reconnecting "
+                "(no duplicate window)")
+        return True
+    chrome = find_chrome()
+    if chrome is None:
+        say(FAIL, "Google Chrome not found — install it or start it manually with "
+                  "scripts/start_master_chrome.bat")
+        return False
+    profile = CFG["profile"] or str(Path.home() / "aiauto-chrome")
+    port = urlparse(cdp).port or 9222
+    say("▶", f"opening Chrome (profile {profile}, debug port {port})…")
+    subprocess.Popen([
+        chrome,
+        f"--remote-debugging-port={port}",
+        f"--user-data-dir={profile}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        CFG["chatgpt"],
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for _ in range(30):
+        if cdp_alive(cdp):
+            say(OK, "Chrome connected (existing ChatGPT login is preserved)")
+            return True
+        time.sleep(1)
+    say(FAIL, "Chrome did not expose the debugging port within 30 s")
+    return False
+
+
+# ---------- main ----------
+
+def main() -> int:
+    global CFG
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--server-only", action="store_true",
+                        help="no Chrome/worker on this machine")
+    parser.add_argument("--no-chrome", action="store_true",
+                        help="start the worker but do not manage Chrome")
+    # kept for backwards compatibility; full mode is now the default
+    parser.add_argument("--with-worker", action="store_true", help=argparse.SUPPRESS)
+    args = parser.parse_args()
+    run_worker = not args.server_only
+
+    print("┌──────────────────────────────────────────────┐")
+    print("│  AIAuto — one-click startup                  │")
+    print("└──────────────────────────────────────────────┘")
+
+    print("\n[1/6] Environment & configuration")
+    CFG = load_config()
+
+    print("\n[2/6] Redis")
+    ensure_redis()
+
+    print("\n[3/6] Backend (API + frontend + scheduler + WebSocket)")
+    spawn("backend", [VENV_PY, "-m", "uvicorn", "app.main:app",
+                      "--host", args.host, "--port", str(args.port)], BACKEND)
+    health = wait_health(args.port, lambda h: h.get("database"), 90, "backend")
+    if health is None:
+        die("backend did not become healthy — check logs/aiauto.log")
+    say(OK, "backend healthy (database OK)")
+    if not health.get("redis"):
+        die("backend cannot reach Redis — check REDIS_URL in .env")
+    say(OK, "Redis connection verified")
+
+    chrome_ok = True
+    if run_worker:
+        if not args.no_chrome:
+            print("\n[4/6] Chrome (ChatGPT Pro session)")
+            chrome_ok = ensure_chrome()
+        else:
+            print("\n[4/6] Chrome — skipped (--no-chrome)")
+
+        print("\n[5/6] Browser-automation worker")
+        spawn("worker", [VENV_PY, "-m", "worker.main"], BACKEND)
+        health = wait_health(args.port, lambda h: h.get("worker"), 45, "worker")
+        if health is None:
+            die("worker did not come online — check the worker output above")
+        say(OK, "worker online")
+        if not args.no_chrome:
+            health = wait_health(args.port, lambda h: h.get("chrome"), 30, "chrome")
+            if health is None:
+                chrome_ok = False
+                say(WARN, "worker cannot reach Chrome yet")
+            else:
+                say(OK, "browser automation connected to Chrome")
+    else:
+        print("\n[4/6] Chrome — skipped (--server-only)")
+        print("[5/6] Worker — skipped (--server-only)")
+
+    print("\n[6/6] Final verification")
+    health = fetch_health(args.port) or {}
+    checks = {
+        "Backend responding": bool(health),
+        "Database connected": health.get("database", False),
+        "Redis connected": health.get("redis", False),
+    }
+    if run_worker:
+        checks["Worker online"] = health.get("worker", False)
+        if not args.no_chrome:
+            checks["Chrome/browser automation"] = health.get("chrome", False) and chrome_ok
+    for label, passed in checks.items():
+        say(OK if passed else FAIL, label)
+
+    if all(checks.values()):
+        print(f"""
+══════════════════════════════════════════════════
+  ✔ System Ready
+══════════════════════════════════════════════════
+  Web app:      http://localhost:{args.port}
+  API docs:     http://localhost:{args.port}/api/docs   (interactive explorer)
+  Public API:   http://localhost:{args.port}/api/public/v1  (X-API-Key)
+  Health:       http://localhost:{args.port}/api/health
+{'' if run_worker else '  Worker:       run start on the master computer (default mode)'}
+  ChatGPT login: if prompts fail with "logged out", sign in once in the
+  Chrome window that just opened — the profile remembers it afterwards.
+  Press Ctrl+C to stop (Chrome stays open to preserve the session).
+""")
+    else:
+        failed = [k for k, v in checks.items() if not v]
+        print(f"""
+══════════════════════════════════════════════════
+  {WARN} System started with problems: {', '.join(failed)}
+══════════════════════════════════════════════════
+  Everything else is running. Fix the item(s) above; the platform will
+  recover automatically (services retry on their own). Press Ctrl+C to stop.
+""")
+
+    try:
+        while True:
+            for name, proc in list(procs):
+                code = proc.poll()
+                if code is not None:
+                    say(FAIL, f"{name} exited with code {code} — restarting in 3 s")
+                    time.sleep(3)
+                    procs.remove((name, proc))
+                    if name == "backend":
+                        spawn(name, [VENV_PY, "-m", "uvicorn", "app.main:app",
+                                     "--host", args.host, "--port", str(args.port)], BACKEND)
+                    else:
+                        spawn(name, [VENV_PY, "-m", "worker.main"], BACKEND)
+                    break
+            time.sleep(2)
+    except KeyboardInterrupt:
+        print("\nStopping services… (Chrome is left running on purpose)")
+        stop_all()
+    return 0
 
 
 if __name__ == "__main__":
