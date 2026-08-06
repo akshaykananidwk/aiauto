@@ -96,12 +96,16 @@ def load_config() -> dict:
 
 # ---------- step 2: Redis ----------
 
-def redis_reachable(host: str, port: int) -> bool:
+def port_open(host: str, port: int) -> bool:
     try:
         with socket.create_connection((host, port), timeout=2):
             return True
     except OSError:
         return False
+
+
+def redis_reachable(host: str, port: int) -> bool:
+    return port_open(host, port)
 
 
 def try_start_redis() -> None:
@@ -251,8 +255,20 @@ def main() -> int:
     ensure_redis()
 
     print("\n[3/6] Backend (API + frontend + scheduler + WebSocket)")
-    spawn("backend", [VENV_PY, "-m", "uvicorn", "app.main:app",
-                      "--host", args.host, "--port", str(args.port)], BACKEND)
+    # pre-flight: is the port already taken? Running start.bat twice must
+    # REUSE the existing backend, never fight it for the port.
+    existing = fetch_health(args.port)
+    if existing and existing.get("app"):
+        say(OK, f"backend already running on port {args.port} — reusing it "
+                "(close this window's twin if you started start.bat twice)")
+    else:
+        if port_open("127.0.0.1", args.port):
+            die(f"port {args.port} is used by another program (not AIAuto).\n"
+                f"  Find it:   netstat -ano | findstr :{args.port}\n"
+                f"  Kill it:   taskkill /F /PID <pid>\n"
+                f"  …or start on another port:  start.bat --port 8001")
+        spawn("backend", [VENV_PY, "-m", "uvicorn", "app.main:app",
+                          "--host", args.host, "--port", str(args.port)], BACKEND)
     health = wait_health(args.port, lambda h: h.get("database"), 90, "backend")
     if health is None:
         die("backend did not become healthy — check logs/aiauto.log")
@@ -270,7 +286,11 @@ def main() -> int:
             print("\n[4/6] Chrome — skipped (--no-chrome)")
 
         print("\n[5/6] Browser-automation worker")
-        spawn("worker", [VENV_PY, "-m", "worker.main"], BACKEND)
+        pre = fetch_health(args.port) or {}
+        if pre.get("worker"):
+            say(OK, "a worker is already online — not starting a duplicate")
+        else:
+            spawn("worker", [VENV_PY, "-m", "worker.main"], BACKEND)
         health = wait_health(args.port, lambda h: h.get("worker"), 45, "worker")
         if health is None:
             die("worker did not come online — check the worker output above")
@@ -324,20 +344,43 @@ def main() -> int:
   recover automatically (services retry on their own). Press Ctrl+C to stop.
 """)
 
+    restarts: dict[str, list[float]] = {}
     try:
         while True:
             for name, proc in list(procs):
                 code = proc.poll()
-                if code is not None:
-                    say(FAIL, f"{name} exited with code {code} — restarting in 3 s")
-                    time.sleep(3)
-                    procs.remove((name, proc))
-                    if name == "backend":
-                        spawn(name, [VENV_PY, "-m", "uvicorn", "app.main:app",
-                                     "--host", args.host, "--port", str(args.port)], BACKEND)
-                    else:
-                        spawn(name, [VENV_PY, "-m", "worker.main"], BACKEND)
-                    break
+                if code is None:
+                    continue
+                # crash-loop guard: a service that dies 3 times within 90 s
+                # has a real problem — stop hammering it and say so clearly
+                history = [t for t in restarts.get(name, []) if time.time() - t < 90]
+                history.append(time.time())
+                restarts[name] = history
+                procs.remove((name, proc))
+                if len(history) >= 3:
+                    say(FAIL, f"{name} keeps crashing (exit code {code}).")
+                    if name == "backend" and code == 3:
+                        say(FAIL, f"exit code 3 usually means port {args.port} is taken "
+                                  "by ANOTHER AIAuto window or a stale process.")
+                        say(FAIL, "Close other start.bat windows, or run: "
+                                  f"netstat -ano | findstr :{args.port}  → "
+                                  "taskkill /F /PID <pid>")
+                    say(FAIL, "Not restarting it again — fix the cause, then run "
+                              "start.bat once more. (Ctrl+C to stop the rest.)")
+                    continue
+                say(FAIL, f"{name} exited with code {code} — restarting in 3 s")
+                time.sleep(3)
+                if name == "backend":
+                    # if another healthy backend already owns the port, just
+                    # attach to it instead of colliding forever
+                    if fetch_health(args.port):
+                        say(OK, "another AIAuto backend is serving the port — reusing it")
+                        continue
+                    spawn(name, [VENV_PY, "-m", "uvicorn", "app.main:app",
+                                 "--host", args.host, "--port", str(args.port)], BACKEND)
+                else:
+                    spawn(name, [VENV_PY, "-m", "worker.main"], BACKEND)
+                break
             time.sleep(2)
     except KeyboardInterrupt:
         print("\nStopping services… (Chrome is left running on purpose)")
