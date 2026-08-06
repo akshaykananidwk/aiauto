@@ -118,13 +118,18 @@ class SchedulerService:
     async def _run_due_schedules(self, db: AsyncSession) -> None:
         now = datetime.now(timezone.utc)
         res = await db.execute(
-            select(ScheduledPrompt).where(
+            select(ScheduledPrompt.id).where(
                 ScheduledPrompt.is_active.is_(True),
                 ScheduledPrompt.next_run_at.isnot(None),
                 ScheduledPrompt.next_run_at <= now,
             )
         )
-        for sched in res.scalars().all():
+        # iterate over ids and re-fetch inside the loop: a rollback for one
+        # schedule must not leave expired instances for the next iteration
+        for sched_id in res.scalars().all():
+            sched = await db.get(ScheduledPrompt, sched_id)
+            if sched is None or not sched.is_active:
+                continue
             try:
                 from app.models.user import User
 
@@ -170,25 +175,34 @@ class SchedulerService:
 
     async def _requeue_orphans(self, db: AsyncSession) -> None:
         queue = QueueService()
+        redis = get_redis()
         try:
-            pending = set(await queue.pending_ids(1000))
             active = await queue.active_job_ids()
         except Exception:
             return  # Redis unavailable — nothing to reconcile
 
-        # waiting in DB but not queued anywhere → lost enqueue, re-add
+        # Waiting in DB but not queued anywhere → lost enqueue. A prompt is
+        # only re-added after being missing on TWO consecutive ticks (redis
+        # marker), because a just-popped job is legitimately absent from the
+        # queue for a few seconds before the worker commits `processing` or
+        # its heartbeat advertises the job — created_at age proves nothing.
         res = await db.execute(
             select(Prompt).where(Prompt.status == PromptStatus.waiting).limit(500)
         )
         for prompt in res.scalars().all():
-            if prompt.id not in pending and prompt.id not in active:
-                grace = datetime.now(timezone.utc) - timedelta(seconds=TICK_SECONDS * 2)
-                created = prompt.created_at
-                if created.tzinfo is None:
-                    created = created.replace(tzinfo=timezone.utc)
-                if created < grace:
-                    await queue.enqueue(prompt.id, prompt.priority)
-                    logger.warning("re-queued orphaned waiting prompt %s", prompt.id)
+            marker = f"aiauto:orphan:{prompt.id}"
+            try:
+                if await queue.in_queue(prompt.id) or prompt.id in active:
+                    await redis.delete(marker)
+                    continue
+                first_sighting = await redis.set(marker, "1", nx=True, ex=600)
+                if first_sighting:
+                    continue  # give it one full tick to reappear
+                await redis.delete(marker)
+                await queue.enqueue(prompt.id, prompt.priority)
+                logger.warning("re-queued orphaned waiting prompt %s", prompt.id)
+            except Exception as exc:
+                logger.warning("orphan check failed for %s: %s", prompt.id, exc)
 
         # processing but no live worker owns it → the worker died mid-job
         stale_after = timedelta(seconds=self.settings.job_timeout_seconds + 120)

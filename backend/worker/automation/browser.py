@@ -33,6 +33,7 @@ class BrowserManager:
                 return self._context
             await self.stop()  # stale connection — clean up before reconnecting
 
+        self.attached_over_cdp = False  # reset — may fall back to launching
         self._pw = await async_playwright().start()
 
         # 1) attach to the running, logged-in Chrome
@@ -101,6 +102,7 @@ class BrowserManager:
         finally:
             self._context = None
             self._browser = None
+            self.attached_over_cdp = False
             if self._pw is not None:
                 await self._pw.stop()
                 self._pw = None

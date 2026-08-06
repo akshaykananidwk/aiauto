@@ -339,17 +339,20 @@ class UpdateService:
             raise RuntimeError(f"alembic {' '.join(args)} failed:\n{output[-2000:]}")
         return output
 
-    def _alembic_current(self) -> str:
-        """Current DB revision (empty when unversioned)."""
+    def _alembic_current(self) -> str | None:
+        """Current DB revision. '' = genuinely unversioned DB;
+        None = could not determine (do NOT downgrade blindly in that case,
+        'downgrade base' on a versioned DB would destroy the schema)."""
         try:
             output = self._run_alembic("current")
             for line in output.splitlines():
                 line = line.strip()
                 if line and not line.startswith(("INFO", "WARN")):
                     return line.split(" ")[0]
+            return ""
         except Exception as exc:
             logger.warning("could not read current alembic revision: %s", exc)
-        return ""
+            return None
 
     def _install_python_deps(self) -> str:
         result = subprocess.run(
@@ -412,19 +415,26 @@ class UpdateService:
             raise RuntimeError("an update is already running")
         _run_state.update({"running": True, "step": "starting", "progress": 0, "log": []})
 
-        self._assert_sane_root()
-        cfg = await self.get_config()
-        record = UpdateRecord(from_commit=cfg["current_commit"], status=UpdateStatus.running)
-        self.db.add(record)
-        await self.db.commit()
-        await self.db.refresh(record)
-
+        record: UpdateRecord | None = None
         backup_zip: Path | None = None
-        protected = cfg["protected_paths"]
-        pre_update_revision = ""
+        protected: list[str] = []
+        cfg: dict = {}
+        pre_update_revision: str | None = ""
         migrations_ran = False
         deps_installed = False
+        update_committed = False
         try:
+            # everything — including the sanity guard — runs inside this
+            # try so the finally always releases the running flag
+            self._assert_sane_root()
+            cfg = await self.get_config()
+            protected = cfg["protected_paths"]
+            record = UpdateRecord(from_commit=cfg["current_commit"],
+                                  status=UpdateStatus.running)
+            self.db.add(record)
+            await self.db.commit()
+            await self.db.refresh(record)
+
             check = await self.check()
             if not check["update_available"]:
                 raise RuntimeError("already up to date")
@@ -471,8 +481,10 @@ class UpdateService:
 
             await self._progress("migrate", 78, "Running database migrations…")
             pre_update_revision = await asyncio.to_thread(self._alembic_current)
-            migration_log = await asyncio.to_thread(self._run_alembic, "upgrade", "head")
+            # set BEFORE upgrading: a mid-chain migration failure must still
+            # trigger a downgrade of the partially-applied chain
             migrations_ran = True
+            migration_log = await asyncio.to_thread(self._run_alembic, "upgrade", "head")
             await self._progress("migrate", 86, "Migrations complete")
 
             # durable success FIRST; everything after this is best-effort
@@ -483,43 +495,60 @@ class UpdateService:
                 "\n--- migrations ---\n" + migration_log[-4000:]
             record.finished_at = datetime.now(timezone.utc)
             await self.db.commit()
+            update_committed = True
 
-            await self._progress("cache", 92, "Clearing cache…")
+            # post-commit tail: nothing here may trigger the rollback path
             try:
+                await self._progress("cache", 92, "Clearing cache…")
                 cleared = await QueueService().clear_cache()
                 await self._progress("cache", 95, f"Cleared {cleared} cache keys")
-            except Exception as exc:  # cache clear must never fail a completed update
+            except Exception as exc:
                 await self._progress("cache", 95, f"Cache clear skipped (non-fatal): {exc}")
-
-            await self._prune_backups(self.app_settings.backup_path)
-            await self._progress("done", 100, f"Update to {target_sha[:10]} successful ✔")
-
-            if cfg["auto_restart"]:
-                await self._progress("restart", 100, "Restarting service…")
-                loop = asyncio.get_running_loop()
-                loop.call_later(2, os._exit, 0)  # service manager restarts us
+            try:
+                await self._prune_backups(self.app_settings.backup_path)
+                await self._progress("done", 100, f"Update to {target_sha[:10]} successful ✔")
+                if cfg["auto_restart"]:
+                    await self._progress("restart", 100, "Restarting service…")
+                    loop = asyncio.get_running_loop()
+                    loop.call_later(2, os._exit, 0)  # service manager restarts us
+            except Exception as exc:
+                logger.warning("post-update housekeeping failed (non-fatal): %s", exc)
             return record
 
         except Exception as exc:
             logger.exception("update failed")
             await self._progress("error", 0, f"Update failed: {exc}")
+            if update_committed:
+                # the update itself already succeeded durably — never roll it
+                # back because of a post-commit hiccup
+                raise
             rollback_ok = True
 
             if migrations_ran:
                 # migrations must be reverted BEFORE restoring old files —
                 # the new migration scripts are still on disk right now
-                target_rev = pre_update_revision or "base"
-                try:
-                    await asyncio.to_thread(self._run_alembic, "downgrade", target_rev)
-                    await self._progress("rolled_back", 0,
-                                         f"Database downgraded to {target_rev}")
-                except Exception as db_exc:
+                if pre_update_revision is None:
+                    # unknown starting revision: downgrading blindly could
+                    # destroy a versioned schema — require manual restore
                     rollback_ok = False
                     await self._progress(
                         "rollback_failed", 0,
-                        f"DATABASE DOWNGRADE FAILED — schema may be ahead of code. "
-                        f"Restore the db backup from backups/. Error: {db_exc}",
+                        "Pre-update DB revision unknown — automatic downgrade skipped. "
+                        "Restore the db_* backup from backups/ manually.",
                     )
+                else:
+                    target_rev = pre_update_revision or "base"
+                    try:
+                        await asyncio.to_thread(self._run_alembic, "downgrade", target_rev)
+                        await self._progress("rolled_back", 0,
+                                             f"Database downgraded to {target_rev}")
+                    except Exception as db_exc:
+                        rollback_ok = False
+                        await self._progress(
+                            "rollback_failed", 0,
+                            f"DATABASE DOWNGRADE FAILED — schema may be ahead of code. "
+                            f"Restore the db backup from backups/. Error: {db_exc}",
+                        )
 
             if backup_zip and backup_zip.exists():
                 try:
@@ -543,10 +572,13 @@ class UpdateService:
             else:
                 rollback_ok = False
 
-            record.status = UpdateStatus.rolled_back if rollback_ok else UpdateStatus.failed
-            record.log = "\n".join(_run_state["log"])
-            record.finished_at = datetime.now(timezone.utc)
-            await self.db.commit()
+            if record is not None:
+                await self.db.rollback()  # clear any failed transaction state
+                record.status = UpdateStatus.rolled_back if rollback_ok else UpdateStatus.failed
+                record.log = "\n".join(_run_state["log"])
+                record.finished_at = datetime.now(timezone.utc)
+                self.db.add(record)
+                await self.db.commit()
             raise
         finally:
             _run_state["running"] = False

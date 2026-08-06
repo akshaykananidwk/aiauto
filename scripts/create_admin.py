@@ -23,6 +23,8 @@ async def main() -> None:
     parser.add_argument("--username", default="admin")
     parser.add_argument("--password", required=True)
     parser.add_argument("--full-name", default="Administrator")
+    parser.add_argument("--reset", action="store_true",
+                        help="reset password/role/is_active if the user already exists")
     args = parser.parse_args()
 
     if len(args.password) < 8:
@@ -41,11 +43,16 @@ async def main() -> None:
             )
             repo.add(user)
             print(f"created admin user '{args.username}'")
-        else:
+        elif args.reset:
             user.hashed_password = hash_password(args.password)
             user.role = UserRole.admin
             user.is_active = True
             print(f"reset password for admin user '{args.username}'")
+        else:
+            # never silently reset an existing account on a re-run
+            print(f"ALREADY_EXISTS: user '{args.username}' left untouched "
+                  "(pass --reset to reset the password)")
+            return
         await db.commit()
 
 

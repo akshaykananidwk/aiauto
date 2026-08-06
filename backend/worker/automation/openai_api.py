@@ -82,7 +82,16 @@ class OpenAIAPIProvider:
                 )
                 r.raise_for_status()
                 data = r.json()
-                result.text = data["choices"][0]["message"]["content"]
+                choice = data["choices"][0]
+                finish = choice.get("finish_reason", "stop")
+                if finish == "content_filter":
+                    raise RuntimeError("openai blocked the request (content_filter)")
+                result.text = choice["message"]["content"] or ""
+                if not result.text.strip():
+                    raise RuntimeError(
+                        f"openai returned an empty response (finish_reason={finish})")
+                if finish == "length":
+                    result.text += "\n\n[Response truncated: model output limit reached]"
                 usage = data.get("usage", {})
                 result.input_tokens = int(usage.get("prompt_tokens", 0))
                 result.output_tokens = int(usage.get("completion_tokens", 0))

@@ -39,6 +39,10 @@ class QueueService:
     async def pending_ids(self, limit: int = 100) -> list[str]:
         return await self.redis.zrange(QUEUE_KEY, 0, limit - 1)
 
+    async def in_queue(self, prompt_id: str) -> bool:
+        """Exact membership check — unlike pending_ids this is not capped."""
+        return await self.redis.zscore(QUEUE_KEY, prompt_id) is not None
+
     async def position(self, prompt_id: str) -> int | None:
         rank = await self.redis.zrank(QUEUE_KEY, prompt_id)
         return None if rank is None else rank + 1

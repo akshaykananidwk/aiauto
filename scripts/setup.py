@@ -151,15 +151,29 @@ def run_migrations() -> None:
 def seed_admin() -> None:
     step("6/8 Admin account")
     password = ARGS.admin_password or secrets.token_urlsafe(12)
-    if run([VENV_PY, str(ROOT / "scripts" / "create_admin.py"),
-            "--username", "admin", "--password", password], cwd=BACKEND):
-        if ARGS.admin_password:
-            ok("admin account ready (password from --admin-password)")
-        else:
-            ok("admin account ready — INITIAL PASSWORD (change after first login):")
-            print(f"\n      username: admin\n      password: {password}\n")
-    else:
+    cmd = [str(VENV_PY), str(ROOT / "scripts" / "create_admin.py"),
+           "--username", "admin", "--password", password]
+    # an explicit --admin-password means the operator WANTS this password
+    # set; otherwise an existing admin account is never touched on re-runs
+    if ARGS.admin_password:
+        cmd.append("--reset")
+    try:
+        result = subprocess.run(cmd, cwd=BACKEND, capture_output=True, text=True,
+                                timeout=300)
+    except Exception:
+        result = None
+    if result is None or result.returncode != 0:
+        if result is not None and result.stderr:
+            print(result.stderr[-800:])
         fail("could not create the admin account (database problem?)")
+        return
+    if "ALREADY_EXISTS" in result.stdout:
+        ok("admin account already exists (left untouched)")
+    elif ARGS.admin_password:
+        ok("admin account ready (password from --admin-password)")
+    else:
+        ok("admin account ready — INITIAL PASSWORD (change after first login):")
+        print(f"\n      username: admin\n      password: {password}\n")
 
 
 def build_frontend() -> None:

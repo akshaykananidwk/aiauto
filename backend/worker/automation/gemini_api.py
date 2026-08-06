@@ -63,11 +63,24 @@ class GeminiProvider:
             r.raise_for_status()
             data = r.json()
 
+        # HTTP 200 does not mean success — safety blocks and abnormal stops
+        # must raise so the failover chain can try the next provider
+        feedback = data.get("promptFeedback", {})
+        if feedback.get("blockReason"):
+            raise RuntimeError(f"gemini blocked the prompt: {feedback['blockReason']}")
         candidates = data.get("candidates", [])
-        text = ""
-        if candidates:
-            text = "".join(p.get("text", "")
-                           for p in candidates[0].get("content", {}).get("parts", []))
+        if not candidates:
+            raise RuntimeError("gemini returned no candidates")
+        candidate = candidates[0]
+        finish = candidate.get("finishReason", "STOP")
+        text = "".join(p.get("text", "")
+                       for p in candidate.get("content", {}).get("parts", []))
+        if finish not in ("STOP", "MAX_TOKENS"):
+            raise RuntimeError(f"gemini generation stopped abnormally: {finish}")
+        if not text.strip():
+            raise RuntimeError(f"gemini returned an empty response (finishReason={finish})")
+        if finish == "MAX_TOKENS":
+            text += "\n\n[Response truncated: model output limit reached]"
         usage = data.get("usageMetadata", {})
         return AIResult(
             text=text,

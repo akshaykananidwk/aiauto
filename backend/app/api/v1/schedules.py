@@ -96,7 +96,11 @@ async def update_schedule(
     reactivated = patch.get("is_active") and not sched.is_active
     for key, value in patch.items():
         setattr(sched, key, value)
-    if {"interval_minutes", "run_at_time", "weekday"} & patch.keys() or reactivated:
+    # one-time schedules keep their stored next_run_at — compute_next_run
+    # returns None for them, which would silently disarm the schedule
+    if sched.schedule_type != ScheduleType.once and (
+        {"interval_minutes", "run_at_time", "weekday"} & patch.keys() or reactivated
+    ):
         sched.next_run_at = compute_next_run(
             sched.schedule_type, now=datetime.now(timezone.utc),
             interval_minutes=sched.interval_minutes,

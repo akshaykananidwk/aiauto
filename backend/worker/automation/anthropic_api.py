@@ -75,7 +75,7 @@ class AnthropicProvider:
         ) as client:
             r = await client.post("/v1/messages", json={
                 "model": model,
-                "max_tokens": 8192,
+                "max_tokens": self.settings.anthropic_max_tokens,
                 "messages": [{"role": "user", "content": content}],
             })
             r.raise_for_status()
@@ -83,6 +83,17 @@ class AnthropicProvider:
 
         text = "".join(b.get("text", "") for b in data.get("content", [])
                        if b.get("type") == "text")
+        # HTTP 200 does not mean success — check why generation stopped so a
+        # truncated/refused answer is never stored as a completed result
+        stop_reason = data.get("stop_reason")
+        if stop_reason == "refusal" or (not text.strip() and stop_reason != "end_turn"):
+            raise RuntimeError(f"anthropic declined the request (stop_reason={stop_reason})")
+        if stop_reason == "max_tokens":
+            raise RuntimeError(
+                f"anthropic response truncated at max_tokens="
+                f"{self.settings.anthropic_max_tokens} — raise ANTHROPIC_MAX_TOKENS "
+                "or shorten the prompt/attachments"
+            )
         usage = data.get("usage", {})
         return AIResult(
             text=text,

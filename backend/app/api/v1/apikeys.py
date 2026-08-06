@@ -33,10 +33,13 @@ async def create_api_key(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ApiKeyCreated:
-    res = await db.execute(select(ApiKey).where(ApiKey.user_id == user.id))
+    res = await db.execute(
+        select(ApiKey).where(ApiKey.user_id == user.id, ApiKey.is_active.is_(True))
+    )
     if len(res.scalars().all()) >= MAX_KEYS_PER_USER:
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                            f"Maximum {MAX_KEYS_PER_USER} API keys per user")
+                            f"Maximum {MAX_KEYS_PER_USER} active API keys per user — "
+                            "revoke one first")
     plain, key_hash, prefix = generate_api_key()
     key = ApiKey(user_id=user.id, name=body.name, prefix=prefix, key_hash=key_hash)
     db.add(key)

@@ -94,6 +94,7 @@ class Settings(BaseSettings):
     openai_image_model: str = "gpt-image-1"
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-4-5"
+    anthropic_max_tokens: int = 16384
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.0-flash"
 

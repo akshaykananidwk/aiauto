@@ -272,12 +272,24 @@ class Worker:
 
                 admin = await self._admin_settings(db)
 
-                prompt.status = PromptStatus.processing
-                prompt.started_at = datetime.now(timezone.utc)
+                # guarded waiting→processing transition: an API-side
+                # cancellation committed in this window must win
+                started = await db.execute(
+                    sql_update(Prompt)
+                    .where(Prompt.id == prompt_id, Prompt.status == PromptStatus.waiting)
+                    .values(status=PromptStatus.processing,
+                            started_at=datetime.now(timezone.utc))
+                )
+                if started.rowcount != 1:
+                    await db.rollback()
+                    await self.queue.clear_cancel_flag(prompt_id)
+                    logger.info("prompt %s no longer waiting — skipping", prompt_id)
+                    return
                 await audit(db, "prompt.started", f"prompt {prompt.id} started",
                             user_id=prompt.user_id, meta={"prompt_id": prompt.id,
                                                           "worker": self.worker_id})
                 await db.commit()
+                await db.refresh(prompt)
                 await self._publish_safe(events.PROMPT_PROCESSING,
                                          {"prompt_id": prompt.id}, prompt.user_id)
                 if prompt.wants_image:
@@ -317,13 +329,16 @@ class Worker:
                     "completed_at": datetime.now(timezone.utc),
                 })
                 if not claimed:
-                    # the API cancelled this prompt mid-run — honour it
+                    # the API cancelled this prompt mid-run — honour it.
+                    # NB: snapshot ids BEFORE rollback (rollback expires ORM
+                    # instances; expired access raises under asyncio)
+                    prompt_id_, user_id_ = prompt.id, prompt.user_id
                     await db.rollback()
-                    await self.queue.clear_cancel_flag(prompt.id)
+                    await self.queue.clear_cancel_flag(prompt_id_)
                     await audit(db, "prompt.cancel_honoured",
-                                f"prompt {prompt.id} was cancelled mid-run; result discarded",
-                                user_id=prompt.user_id, level="warning",
-                                meta={"prompt_id": prompt.id}, commit=True)
+                                f"prompt {prompt_id_} was cancelled mid-run; result discarded",
+                                user_id=user_id_, level="warning",
+                                meta={"prompt_id": prompt_id_}, commit=True)
                     return
 
                 self._save_result_files(db, prompt, result)
@@ -359,49 +374,60 @@ class Worker:
         if isinstance(exc, (GenerationTimeoutError, asyncio.TimeoutError)):
             error_msg = "The AI did not finish in time. The job can be retried."
 
+        # snapshot BEFORE rollback — rollback expires ORM instances and
+        # expired attribute access raises MissingGreenlet under asyncio
+        prompt_id_ = prompt.id
+        user_id_ = prompt.user_id
+        retry_count = prompt.retry_count
+        priority = prompt.priority
+        text_snippet = prompt.prompt_text[:80]
+
         await db.rollback()  # discard any partial state from the failed run
 
-        if retryable and prompt.retry_count < admin.job_retry_count:
-            claimed = await self._claim_terminal(db, prompt.id, {
+        if retryable and retry_count < admin.job_retry_count:
+            claimed = await self._claim_terminal(db, prompt_id_, {
                 "status": PromptStatus.waiting,
-                "retry_count": prompt.retry_count + 1,
+                "retry_count": retry_count + 1,
                 "error": error_msg,
             })
             if not claimed:  # cancelled mid-run — do not resurrect it
                 await db.rollback()
-                await self.queue.clear_cancel_flag(prompt.id)
+                await self.queue.clear_cancel_flag(prompt_id_)
                 return
             await audit(db, "prompt.retry",
-                        f"prompt {prompt.id} auto-retry {prompt.retry_count + 1}",
-                        user_id=prompt.user_id, level="warning",
-                        meta={"prompt_id": prompt.id, "error": error_msg})
+                        f"prompt {prompt_id_} auto-retry {retry_count + 1}",
+                        user_id=user_id_, level="warning",
+                        meta={"prompt_id": prompt_id_, "error": error_msg})
             await db.commit()
-            await self.queue.clear_cancel_flag(prompt.id)
-            await self.queue.enqueue(prompt.id, prompt.priority)
+            await self.queue.clear_cancel_flag(prompt_id_)
+            await self.queue.enqueue(prompt_id_, priority)
             return
 
-        claimed = await self._claim_terminal(db, prompt.id, {
+        claimed = await self._claim_terminal(db, prompt_id_, {
             "status": PromptStatus.failed,
             "error": error_msg,
             "completed_at": datetime.now(timezone.utc),
         })
         if not claimed:  # already cancelled — nothing more to record
             await db.rollback()
-            await self.queue.clear_cancel_flag(prompt.id)
+            await self.queue.clear_cancel_flag(prompt_id_)
             return
-        await audit(db, "prompt.failed", f"prompt {prompt.id} failed: {error_msg}",
-                    user_id=prompt.user_id, level="error",
-                    meta={"prompt_id": prompt.id})
-        if prompt.user:
+        await audit(db, "prompt.failed", f"prompt {prompt_id_} failed: {error_msg}",
+                    user_id=user_id_, level="error",
+                    meta={"prompt_id": prompt_id_})
+        from app.models.user import User
+
+        user = await db.get(User, user_id_)  # fresh, non-expired instance
+        if user is not None:
             await NotificationService(db).notify(
-                prompt.user, "error", "Prompt failed",
-                f"Your prompt \"{prompt.prompt_text[:80]}\" failed: {error_msg[:200]}",
-                meta={"prompt_id": prompt.id},
+                user, "error", "Prompt failed",
+                f"Your prompt \"{text_snippet}\" failed: {error_msg[:200]}",
+                meta={"prompt_id": prompt_id_},
             )
         await db.commit()
         await self._publish_safe(events.PROMPT_FAILED,
-                                 {"prompt_id": prompt.id, "error": error_msg},
-                                 prompt.user_id)
+                                 {"prompt_id": prompt_id_, "error": error_msg},
+                                 user_id_)
 
     # ---------- main loop ----------
 
