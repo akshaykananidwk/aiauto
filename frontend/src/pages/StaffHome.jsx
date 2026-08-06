@@ -51,7 +51,10 @@ export default function StaffHome() {
       if (label) setNotice(`${label} (${event.data?.prompt_id?.slice(0, 8) || ''})`)
       if (event.type?.startsWith('prompt.')) load()
     })
-    return disconnect
+    // polling safety net: WS events are best-effort, so refresh the list
+    // periodically to catch any status change a lost event would hide
+    const timer = setInterval(load, 20000)
+    return () => { disconnect(); clearInterval(timer) }
   }, [])
 
   // Voice input via the browser's speech recognition (where available)

@@ -20,7 +20,12 @@ from playwright.async_api import Locator, Page, TimeoutError as PWTimeout
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from worker.automation import selectors as sel
-from worker.automation.base import AIResult, GenerationTimeoutError, LoginExpiredError
+from worker.automation.base import (
+    AIResult,
+    GenerationTimeoutError,
+    ImageDownloadError,
+    LoginExpiredError,
+)
 from worker.automation.browser import BrowserManager
 
 logger = get_logger("worker.chatgpt")
@@ -128,44 +133,107 @@ class ChatGPTProvider:
                 return count
         return 0
 
+    async def _stop_visible(self, page: Page) -> bool:
+        for css in sel.STOP_BUTTON:
+            try:
+                if await page.locator(css).first.is_visible():
+                    return True
+            except Exception:
+                continue
+        return False
+
+    async def _image_generating(self, page: Page) -> bool:
+        """True while ChatGPT shows a 'Creating image…' style indicator —
+        the image is still rendering and must not be captured yet."""
+        for css in sel.IMAGE_GENERATING:
+            try:
+                if await page.locator(css).first.is_visible():
+                    return True
+            except Exception:
+                continue
+        return False
+
+    async def _image_state(self, page: Page, page_wide: bool = False) -> list[dict]:
+        """Snapshot of candidate generated images: src + natural size +
+        load state. Used both for completion detection (the snapshot must
+        stop changing) and for collection."""
+        msg = await self._last_message(page)
+        scope = page if (page_wide or msg is None) else msg
+        min_px = 256 if (page_wide or msg is None) else 64
+        out: list[dict] = []
+        seen: set[str] = set()
+        for css in sel.MESSAGE_IMAGE:
+            try:
+                imgs = await scope.locator(css).all()
+            except Exception:
+                continue
+            for img in imgs:
+                try:
+                    info = await img.evaluate(
+                        "el => ({src: el.currentSrc || el.src || '', "
+                        "w: el.naturalWidth, h: el.naturalHeight, done: el.complete})"
+                    )
+                except Exception:
+                    continue
+                src = info.get("src") or ""
+                if not src or src in seen:
+                    continue
+                if info.get("w", 0) < min_px or info.get("h", 0) < min_px:
+                    continue  # avatars, icons, placeholders
+                seen.add(src)
+                out.append(info)
+        return out
+
+    def _signature(self, text: str, images: list[dict]) -> tuple:
+        return (len(text), tuple(sorted((i["src"], i["w"], i["h"]) for i in images)))
+
     async def _wait_for_completion(
-        self, page: Page, timeout_seconds: int, baseline_count: int
+        self, page: Page, timeout_seconds: int, baseline_count: int, wants_image: bool
     ) -> None:
-        """Done when a NEW assistant message exists (count above the
-        pre-send baseline), the stop button is gone, and the message text
-        has stopped growing. The baseline check prevents capturing a stale
-        answer from an earlier conversation as this prompt's result."""
+        """Done when ALL of the following hold for ~3 consecutive seconds:
+          * a NEW assistant message exists (count above the pre-send
+            baseline — prevents capturing a stale answer),
+          * the stop/streaming button is gone,
+          * no 'Creating image…' indicator is visible,
+          * the message state (text length + every image's src and natural
+            size) has stopped changing, and
+          * there is actually SOMETHING to capture (non-empty text or at
+            least one fully-loaded image).
+
+        Watching the images — not just the text — is essential: ChatGPT
+        keeps rendering a generated image long after the caption text has
+        stabilised, and image-only replies may contain no text at all."""
         loop = asyncio.get_event_loop()
         deadline = loop.time() + timeout_seconds
         # allow generation to actually start
         await asyncio.sleep(2.0)
-        last_len = -1
+        last_sig: tuple | None = None
         stable_ticks = 0
         while loop.time() < deadline:
             if await self._assistant_count(page) <= baseline_count:
                 await asyncio.sleep(1.0)
                 continue  # our reply has not appeared yet
-            stop_visible = False
-            for css in sel.STOP_BUTTON:
-                try:
-                    if await page.locator(css).first.is_visible():
-                        stop_visible = True
-                        break
-                except Exception:
-                    continue
-            current = await self._last_message_text(page)
-            if not stop_visible:
-                if current and len(current) == last_len:
-                    stable_ticks += 1
-                    if stable_ticks >= 3:  # ~3s of no change and no stop button
-                        return
-                else:
-                    stable_ticks = 0
+
+            text = await self._last_message_text(page)
+            images = await self._image_state(page)
+            sig = self._signature(text, images)
+
+            busy = await self._stop_visible(page) or await self._image_generating(page)
+            images_loaded = all(i.get("done") and i.get("src", "").strip() for i in images)
+            has_content = bool(text) or bool(images)
+
+            if not busy and images_loaded and has_content and sig == last_sig:
+                stable_ticks += 1
+                if stable_ticks >= 3:  # ~3s of totally unchanged output
+                    return
             else:
                 stable_ticks = 0
-            last_len = len(current) if current else last_len
+            last_sig = sig
             await asyncio.sleep(1.0)
-        raise GenerationTimeoutError(f"generation did not finish within {timeout_seconds}s")
+        raise GenerationTimeoutError(
+            f"generation did not finish within {timeout_seconds}s"
+            + (" (image was still rendering)" if wants_image else "")
+        )
 
     async def _last_message(self, page: Page) -> Locator | None:
         for css in sel.ASSISTANT_MESSAGE:
@@ -183,30 +251,57 @@ class ChatGPTProvider:
         except Exception:
             return ""
 
-    async def _collect_images(self, page: Page) -> list[tuple[str, bytes]]:
-        images: list[tuple[str, bytes]] = []
-        msg = await self._last_message(page)
-        if msg is None:
-            return images
-        seen: set[str] = set()
-        for css in sel.MESSAGE_IMAGE:
-            for img in await msg.locator(css).all():
-                try:
-                    src = await img.get_attribute("src") or ""
-                    if not src or src in seen:
-                        continue
-                    seen.add(src)
-                    data: bytes | None = None
-                    if src.startswith("http"):
-                        resp = await page.context.request.get(src)
-                        if resp.ok:
-                            data = await resp.body()
-                    if data is None:  # blob:/data: URLs — screenshot the element
-                        data = await img.screenshot(type="png")
+    async def _download_one_image(self, page: Page, src: str) -> bytes | None:
+        """Download an image by src, validating it is REAL image data.
+        HTTP(S) srcs are fetched with the session's cookies; blob:/data:
+        srcs fall back to an element screenshot."""
+        if src.startswith("http"):
+            try:
+                resp = await page.context.request.get(src, timeout=60000)
+                content_type = resp.headers.get("content-type", "")
+                if resp.ok and content_type.startswith("image/"):
+                    body = await resp.body()
+                    if len(body) > 1000:  # reject error stubs / trackers
+                        return body
+                logger.warning("image fetch rejected (%s, %s bytes, %s)",
+                               resp.status, len(await resp.body()), content_type)
+            except Exception as exc:
+                logger.warning("image fetch failed for %s: %s", src[:80], exc)
+        # blob:/data: URL or failed fetch — screenshot the rendered element
+        try:
+            img = page.locator(f"img[src='{src}']").first
+            if await img.count() > 0:
+                data = await img.screenshot(type="png", timeout=15000)
+                if len(data) > 1000:
+                    return data
+        except Exception as exc:
+            logger.warning("image screenshot fallback failed: %s", exc)
+        return None
+
+    async def _collect_images(self, page: Page, wants_image: bool) -> list[tuple[str, bytes]]:
+        """Download every generated image in the reply. When an image was
+        requested, retries (message scope first, then page-wide) before
+        giving up — the caller treats zero images as a hard failure."""
+        attempts = 4 if wants_image else 1
+        for attempt in range(1, attempts + 1):
+            candidates = await self._image_state(page)
+            if not candidates and wants_image:
+                # some UI variants render the image outside the message div
+                candidates = await self._image_state(page, page_wide=True)
+            images: list[tuple[str, bytes]] = []
+            for info in candidates:
+                data = await self._download_one_image(page, info["src"])
+                if data is not None:
                     images.append((f"image_{len(images) + 1}.png", data))
-                except Exception as exc:
-                    logger.warning("image download failed: %s", exc)
-        return images
+            if images or not wants_image:
+                if wants_image:
+                    logger.info("captured %s image(s) on attempt %s", len(images), attempt)
+                return images
+            if attempt < attempts:
+                logger.info("no image captured yet (attempt %s/%s) — waiting…",
+                            attempt, attempts)
+                await asyncio.sleep(3.0)
+        return []
 
     async def _collect_files(self, page: Page) -> list[tuple[str, bytes]]:
         files: list[tuple[str, bytes]] = []
@@ -261,11 +356,20 @@ class ChatGPTProvider:
         await self._attach_files(page, upload_paths)
         baseline = await self._assistant_count(page)
         await self._type_and_send(page, prompt_text)
-        await self._wait_for_completion(page, timeout_seconds, baseline)
+        await self._wait_for_completion(page, timeout_seconds, baseline, wants_image)
 
         text = await self._last_message_text(page)
-        images = await self._collect_images(page)
+        images = await self._collect_images(page, wants_image)
         files = await self._collect_files(page)
+
+        if wants_image and not images:
+            # deleting the conversation here would destroy the evidence —
+            # keep it so the admin can inspect what ChatGPT actually produced
+            raise ImageDownloadError(
+                "an image was requested but none could be captured from the "
+                "reply — the conversation was kept in ChatGPT for inspection"
+                + (f"; reply text: {text[:200]}" if text else "")
+            )
 
         if self.delete_conversations:
             await self._delete_conversation(page)

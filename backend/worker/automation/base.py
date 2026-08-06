@@ -18,3 +18,8 @@ class LoginExpiredError(RuntimeError):
 
 class GenerationTimeoutError(RuntimeError):
     """The generation did not finish within the configured timeout."""
+
+
+class ImageDownloadError(RuntimeError):
+    """An image was requested but could not be captured/downloaded —
+    the job must NOT be marked completed."""

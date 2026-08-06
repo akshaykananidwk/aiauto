@@ -36,7 +36,12 @@ from app.services.audit import audit
 from app.services.notify import NotificationService
 from app.services.queue import QueueService
 from app.services.redis_client import close_redis
-from worker.automation.base import AIResult, GenerationTimeoutError, LoginExpiredError
+from worker.automation.base import (
+    AIResult,
+    GenerationTimeoutError,
+    ImageDownloadError,
+    LoginExpiredError,
+)
 from worker.automation.chatgpt import ChatGPTProvider
 
 logger = get_logger("worker")
@@ -102,19 +107,31 @@ class Worker:
             logger.warning("event publish failed (non-fatal): %s", exc)
 
     def _save_result_files(self, db, prompt: Prompt, result: AIResult) -> None:
+        """Persist result artifacts. Every file is verified on disk before
+        its DB row is added — a prompt is never 'completed' pointing at a
+        file that does not actually exist."""
         from app.services.storage import StorageService, guess_mime, is_image
 
         storage = StorageService()
-        for filename, data in result.images:
+
+        def _save_verified(filename: str, data: bytes) -> tuple[str, int]:
             rel, size = storage.save_bytes("results", prompt.id, filename, data)
-            thumb = storage.make_thumbnail(rel)
+            written = storage.abs_path(rel)
+            if not written.exists() or written.stat().st_size != len(data):
+                raise ImageDownloadError(
+                    f"result file {filename} failed disk verification after write")
+            return rel, size
+
+        for filename, data in result.images:
+            rel, size = _save_verified(filename, data)
+            thumb = storage.make_thumbnail(rel)  # thumbnail failure is non-fatal
             db.add(PromptFile(
                 prompt_id=prompt.id, kind=FileKind.result_image, filename=filename,
                 rel_path=rel, thumb_rel_path=thumb, mime_type=guess_mime(filename),
                 size_bytes=size,
             ))
         for filename, data in result.files:
-            rel, size = storage.save_bytes("results", prompt.id, filename, data)
+            rel, size = _save_verified(filename, data)
             kind = FileKind.result_image if is_image(filename) else FileKind.result_file
             thumb = storage.make_thumbnail(rel) if kind == FileKind.result_image else None
             db.add(PromptFile(
@@ -198,6 +215,12 @@ class Worker:
                         ),
                         timeout=admin.job_timeout_seconds,
                     )
+                    # belt-and-braces: an image prompt must never complete
+                    # without at least one captured image
+                    if prompt.wants_image and not result.images:
+                        raise ImageDownloadError(
+                            "an image was requested but the reply contained no "
+                            "downloadable image")
                 except Exception as exc:
                     await self._handle_failure(db, prompt, exc, admin)
                     return
@@ -223,19 +246,27 @@ class Worker:
                                 meta={"prompt_id": prompt_id_}, commit=True)
                     return
 
-                self._save_result_files(db, prompt, result)
-                await audit(db, "prompt.completed",
-                            f"prompt {prompt.id} completed "
-                            f"({len(result.images)} images, {len(result.files)} files)",
-                            user_id=prompt.user_id, meta={"prompt_id": prompt.id})
-                if prompt.user:
-                    await NotificationService(db).notify(
-                        prompt.user, "success", "Prompt completed",
-                        f"Your prompt \"{prompt.prompt_text[:80]}\" finished"
-                        + (f" with {len(result.images)} image(s)" if result.images else ""),
-                        meta={"prompt_id": prompt.id},
-                    )
-                await db.commit()
+                try:
+                    self._save_result_files(db, prompt, result)
+                    await audit(db, "prompt.completed",
+                                f"prompt {prompt.id} completed "
+                                f"({len(result.images)} images, {len(result.files)} files)",
+                                user_id=prompt.user_id, meta={"prompt_id": prompt.id})
+                    if prompt.user:
+                        await NotificationService(db).notify(
+                            prompt.user, "success", "Prompt completed",
+                            f"Your prompt \"{prompt.prompt_text[:80]}\" finished"
+                            + (f" with {len(result.images)} image(s)" if result.images else ""),
+                            meta={"prompt_id": prompt.id},
+                        )
+                    await db.commit()
+                except Exception as exc:
+                    # storage/DB failure while persisting results: undo the
+                    # completion claim and route through retry/failure —
+                    # never leave the job wedged in `processing`
+                    await db.rollback()
+                    await self._handle_failure(db, prompt, exc, admin)
+                    return
                 # post-commit: purely informational, must never fail the job
                 await self._publish_safe(
                     events.PROMPT_COMPLETED,

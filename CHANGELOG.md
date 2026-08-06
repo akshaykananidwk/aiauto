@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.2.1 — Image pipeline reliability
+
+Root-cause fix for generated images not reaching the website:
+
+- **Image-aware completion detection**: the worker now waits until the
+  reply's images are fully loaded and stable (src + natural size
+  unchanged, no "Creating image…" indicator, image `complete`), not just
+  until the caption text stops changing — ChatGPT keeps rendering an
+  image long after the text stabilises, and image-only replies contain
+  no text at all (previously a guaranteed timeout)
+- **Zero images = failure, never success**: an image prompt that yields
+  no downloadable image is auto-retried and then FAILED with a clear
+  error (the ChatGPT conversation is kept for inspection) instead of
+  being marked completed without results
+- **Hardened capture**: validated HTTP downloads (content-type +
+  minimum size), element-screenshot fallback for blob: URLs, size
+  filtering (no avatars/icons), page-wide fallback scope, and up to 4
+  capture attempts with waits
+- **Disk verification**: every result file is verified on disk before
+  its DB row is written; persist failures roll back the completion and
+  go through the normal retry path instead of wedging the job
+- **Frontend safety net**: prompt pages poll every 8s while a job runs
+  (20s on the dashboard) so results always appear even if a WebSocket
+  event is lost; images without thumbnails now preview from the full
+  file instead of a placeholder icon
+
 ## 1.2.0 — Browser-only architecture
 
 **Breaking:** all external AI API integrations are removed. The platform

@@ -34,9 +34,22 @@ ASSISTANT_MESSAGE = [
 
 MESSAGE_IMAGE = [
     "img[alt='Generated image']",
+    "img[alt*='Generated']",
     "img[src*='oaiusercontent']",
     "img[src*='files.oaiusercontent.com']",
+    "img[src*='sdmntpr']",
     "img[src^='blob:']",
+]
+
+# UI markers shown WHILE an image is still being generated/rendered —
+# completion must wait until none of these are visible
+IMAGE_GENERATING = [
+    "[data-testid*='image-gen']",
+    "div:has-text('Creating image')",
+    "div:has-text('Generating image')",
+    "div:has-text('Getting started')",
+    "progress",
+    "[aria-label*='Creating']",
 ]
 
 FILE_DOWNLOAD_LINK = [

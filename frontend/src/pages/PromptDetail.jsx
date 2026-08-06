@@ -14,8 +14,22 @@ export default function PromptDetail() {
       const p = await api(`/prompts/${id}`)
       setPrompt(p)
       for (const f of p.files) {
-        if (f.has_thumbnail && !thumbs[f.id]) {
-          thumbnailUrl(f.id).then(url => url && setThumbs(t => ({ ...t, [f.id]: url })))
+        const isImage = f.kind === 'result_image' || f.mime_type?.startsWith('image/')
+        if ((f.has_thumbnail || isImage) && !thumbs[f.id]) {
+          // prefer the thumbnail; fall back to the full image so a failed
+          // thumbnail never hides a generated picture
+          const fetchPreview = async () => {
+            if (f.has_thumbnail) {
+              const url = await thumbnailUrl(f.id)
+              if (url) return url
+            }
+            if (!isImage) return null
+            const res = await api(`/files/${f.id}/download`, { raw: true })
+            if (!res.ok) return null
+            return URL.createObjectURL(await res.blob())
+          }
+          fetchPreview().then(url => url && setThumbs(t => ({ ...t, [f.id]: url })))
+            .catch(() => {})
         }
       }
     } catch (err) { setError(err.message) }
@@ -28,6 +42,16 @@ export default function PromptDetail() {
     })
     return disconnect
   }, [id])
+
+  // Polling fallback: WebSocket events are best-effort — while the prompt
+  // is still running, refresh every 8s so results always appear even if
+  // an event is lost.
+  const active = prompt && ['waiting', 'processing'].includes(prompt.status)
+  useEffect(() => {
+    if (!active) return undefined
+    const timer = setInterval(load, 8000)
+    return () => clearInterval(timer)
+  }, [active, id])
 
   if (error) return <div className="alert error">{error}</div>
   if (!prompt) return <div className="center-msg">Loading…</div>
