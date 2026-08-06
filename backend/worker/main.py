@@ -20,6 +20,7 @@ import asyncio
 import os
 import signal
 import socket
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -61,7 +62,16 @@ class Worker:
 
     # ---------- status ----------
 
+    def _read_version(self) -> str:
+        try:
+            from app.core.config import ROOT_DIR
+
+            return (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip()
+        except Exception:
+            return ""
+
     async def _heartbeat_loop(self) -> None:
+        started_version = self._read_version()
         while not self.stopping.is_set():
             try:
                 healthy = await self.provider.healthy()
@@ -72,6 +82,20 @@ class Worker:
                 )
             except Exception as exc:
                 logger.warning("heartbeat failed: %s", exc)
+
+            # the one-click updater replaced the code on disk? restart
+            # ourselves so the worker never keeps running an old version
+            current_version = self._read_version()
+            if (started_version and current_version
+                    and current_version != started_version
+                    and self.current_job is None):
+                logger.info("platform updated %s → %s — restarting worker on new code",
+                            started_version, current_version)
+                try:
+                    await self.provider.stop()
+                except Exception:
+                    pass
+                os.execv(sys.executable, [sys.executable, "-m", "worker.main"])
             await asyncio.sleep(5)
 
     # ---------- helpers ----------

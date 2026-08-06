@@ -185,6 +185,19 @@ tr:hover td { background: rgba(255,255,255,.02); }
 .recording { color: var(--red); border-color: var(--red); animation: pulse 1.2s infinite; }
 @keyframes pulse { 50% { opacity: .5; } }
 
+/* image viewer modal */
+.viewer-overlay {
+  position: fixed; inset: 0; z-index: 100;
+  background: rgba(0,0,0,.75);
+  display: grid; place-items: center; padding: 20px;
+}
+.viewer {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 12px; padding: 16px; max-width: min(92vw, 900px);
+  max-height: 92vh; overflow: auto;
+}
+.viewer img { max-width: 100%; max-height: 70vh; display: block; border-radius: 8px; }
+
 /* responsive */
 .table-scroll { overflow-x: auto; }
 .hamburger { display: none; }

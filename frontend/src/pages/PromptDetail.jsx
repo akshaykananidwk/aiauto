@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { api, downloadFile, thumbnailUrl } from '../api'
+import { api, downloadFile, fileLink, thumbnailUrl } from '../api'
 import { connectEvents } from '../ws'
 
 export default function PromptDetail() {
   const { id } = useParams()
   const [prompt, setPrompt] = useState(null)
   const [thumbs, setThumbs] = useState({})
+  const [viewer, setViewer] = useState(null)   // {file, url} for the image modal
   const [error, setError] = useState('')
 
   const load = async () => {
@@ -115,16 +116,42 @@ export default function PromptDetail() {
         <div className="card">
           <h2>Generated Files &amp; Images</h2>
           <div className="thumb-grid">
-            {results.map(f => (
-              <div key={f.id} className="thumb" onClick={() => downloadFile(f.id, f.filename)}
-                   title="Click to download">
-                {thumbs[f.id]
-                  ? <img src={thumbs[f.id]} alt={f.filename} />
-                  : <div style={{ height: 100, display: 'grid', placeItems: 'center', fontSize: 32 }}>📄</div>}
-                <div className="name">{f.filename}<br />
-                  <span className="muted">{(f.size_bytes / 1024).toFixed(0)} KB</span></div>
-              </div>
-            ))}
+            {results.map(f => {
+              const isImage = f.kind === 'result_image' || f.mime_type?.startsWith('image/')
+              return (
+                <div key={f.id} className="thumb"
+                  onClick={async () => {
+                    try {
+                      if (isImage) setViewer({ file: f, ...(await fileLink(f.id)) })
+                      else await downloadFile(f.id, f.filename)
+                    } catch (err) { setError(err.message) }
+                  }}
+                  title={isImage ? 'Click to view & save' : 'Click to download'}>
+                  {thumbs[f.id]
+                    ? <img src={thumbs[f.id]} alt={f.filename} />
+                    : <div style={{ height: 100, display: 'grid', placeItems: 'center', fontSize: 32 }}>📄</div>}
+                  <div className="name">{f.filename}<br />
+                    <span className="muted">{(f.size_bytes / 1024).toFixed(0)} KB</span></div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {viewer && (
+        <div className="viewer-overlay" onClick={() => setViewer(null)}>
+          <div className="viewer" onClick={e => e.stopPropagation()}>
+            <img src={viewer.url} alt={viewer.file.filename} />
+            <div className="row between" style={{ marginTop: 12 }}>
+              <span className="muted">{viewer.file.filename}</span>
+              <span className="row" style={{ gap: 8 }}>
+                {/* native link: works on desktop AND saves to mobile gallery */}
+                <a className="btn" href={viewer.url} download={viewer.file.filename}>⬇ Download</a>
+                <a className="btn secondary" href={viewer.url} target="_blank" rel="noreferrer">Open in tab</a>
+                <button className="btn ghost" onClick={() => setViewer(null)}>Close</button>
+              </span>
+            </div>
           </div>
         </div>
       )}

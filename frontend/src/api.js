@@ -61,16 +61,21 @@ export async function api(path, { method = 'GET', body, formData, raw = false } 
   return res.json()
 }
 
+// Native browser download via a short-lived signed URL — unlike blob
+// downloads this saves correctly everywhere (desktop Downloads folder,
+// mobile gallery/Photos, PWA).
 export async function downloadFile(fileId, filename) {
-  const res = await api(`/files/${fileId}/download`, { raw: true })
-  if (!res.ok) throw new Error('Download failed')
-  const blob = await res.blob()
-  const url = URL.createObjectURL(blob)
+  const link = await api(`/files/${fileId}/link`)
   const a = document.createElement('a')
-  a.href = url
-  a.download = filename
+  a.href = link.url
+  a.download = filename || link.filename
+  document.body.appendChild(a)
   a.click()
-  URL.revokeObjectURL(url)
+  a.remove()
+}
+
+export async function fileLink(fileId) {
+  return api(`/files/${fileId}/link`)
 }
 
 export async function thumbnailUrl(fileId) {

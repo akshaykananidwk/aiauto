@@ -61,6 +61,13 @@ def decode_token(token: str, expected_type: str = "access") -> dict[str, Any]:
     return payload
 
 
+def create_file_token(file_id: int) -> str:
+    """Short-lived token that authorizes downloading ONE specific file via
+    a plain URL — lets browsers save natively (mobile gallery, downloads
+    folder) without needing the Authorization header."""
+    return _create_token(str(file_id), "file", timedelta(minutes=15))
+
+
 def token_remaining_seconds(payload: dict[str, Any]) -> int:
     """Seconds until this decoded token expires (for revocation TTLs)."""
     exp = payload.get("exp")

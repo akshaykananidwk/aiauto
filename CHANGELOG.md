@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.3.1 — Image download & stability fixes (end-to-end pass)
+
+- **In-page image download**: images are now fetched INSIDE the ChatGPT
+  page (same session, works for blob: URLs) with the request-context and
+  screenshot methods as fallbacks — the most reliable capture chain
+- **Longer settle for image replies** (5 stable seconds): the
+  progressive render can keep src/size constant while pixels still load
+- **Diagnostic dumps**: when an image cannot be captured, a full-page
+  screenshot + HTML snapshot is saved to logs/ so the exact cause is
+  visible instead of guessing
+- **Worker auto-restarts after updates**: the worker watches the VERSION
+  file and re-executes itself when the one-click updater installs new
+  code — it can no longer keep running an old version silently
+- **Native downloads (mobile gallery fix)**: files now download through
+  short-lived signed links (`/files/{id}/link`) so browsers save them
+  natively — desktop Downloads folder AND mobile Gallery/Photos both
+  work; images open in a viewer with Download / Open-in-tab buttons and
+  support long-press/right-click → Save image
+
 ## 1.3.0 — Public platform API + one-click startup
 
 ### Public REST API (`/api/public/v1`)

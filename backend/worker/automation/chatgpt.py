@@ -222,9 +222,12 @@ class ChatGPTProvider:
             images_loaded = all(i.get("done") and i.get("src", "").strip() for i in images)
             has_content = bool(text) or bool(images)
 
+            # image replies settle longer: ChatGPT's progressive render can
+            # keep src and natural size constant while pixels still fill in
+            needed = 5 if (wants_image or images) else 3
             if not busy and images_loaded and has_content and sig == last_sig:
                 stable_ticks += 1
-                if stable_ticks >= 3:  # ~3s of totally unchanged output
+                if stable_ticks >= needed:
                     return
             else:
                 stable_ticks = 0
@@ -253,21 +256,55 @@ class ChatGPTProvider:
 
     async def _download_one_image(self, page: Page, src: str) -> bytes | None:
         """Download an image by src, validating it is REAL image data.
-        HTTP(S) srcs are fetched with the session's cookies; blob:/data:
-        srcs fall back to an element screenshot."""
+
+        Three strategies, most reliable first:
+          1. fetch INSIDE the page (same session, same cookies — also the
+             only way to read blob: URLs),
+          2. Playwright's request context (browser cookies),
+          3. screenshot of the rendered element.
+        """
+        # 1) in-page fetch → base64 (works for http(s), blob: and data:)
+        try:
+            data_url = await page.evaluate(
+                """async (src) => {
+                    try {
+                        const resp = await fetch(src, {credentials: 'include'});
+                        if (!resp.ok) return null;
+                        const blob = await resp.blob();
+                        return await new Promise((resolve) => {
+                            const fr = new FileReader();
+                            fr.onload = () => resolve(fr.result);
+                            fr.onerror = () => resolve(null);
+                            fr.readAsDataURL(blob);
+                        });
+                    } catch (e) { return null; }
+                }""",
+                src,
+            )
+            if data_url and data_url.startswith("data:"):
+                import base64
+
+                header, _, payload = data_url.partition(",")
+                data = base64.b64decode(payload)
+                if len(data) > 1000 and "image" in header:
+                    return data
+        except Exception as exc:
+            logger.warning("in-page image fetch failed for %s: %s", src[:80], exc)
+
+        # 2) request-context fetch with the browser's cookies
         if src.startswith("http"):
             try:
                 resp = await page.context.request.get(src, timeout=60000)
                 content_type = resp.headers.get("content-type", "")
-                if resp.ok and content_type.startswith("image/"):
-                    body = await resp.body()
-                    if len(body) > 1000:  # reject error stubs / trackers
-                        return body
+                body = await resp.body()
+                if resp.ok and content_type.startswith("image/") and len(body) > 1000:
+                    return body
                 logger.warning("image fetch rejected (%s, %s bytes, %s)",
-                               resp.status, len(await resp.body()), content_type)
+                               resp.status, len(body), content_type)
             except Exception as exc:
                 logger.warning("image fetch failed for %s: %s", src[:80], exc)
-        # blob:/data: URL or failed fetch — screenshot the rendered element
+
+        # 3) screenshot the rendered element
         try:
             img = page.locator(f"img[src='{src}']").first
             if await img.count() > 0:
@@ -324,6 +361,25 @@ class ChatGPTProvider:
                     logger.warning("file download failed: %s", exc)
         return files
 
+    async def _dump_debug(self, page: Page, reason: str) -> None:
+        """Save a screenshot + page HTML to logs/ so capture failures on the
+        master computer can be diagnosed precisely. Never raises."""
+        try:
+            from datetime import datetime, timezone
+
+            from app.core.config import ROOT_DIR
+
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            debug_dir = ROOT_DIR / "logs"
+            debug_dir.mkdir(exist_ok=True)
+            base = debug_dir / f"debug_{reason}_{stamp}"
+            await page.screenshot(path=str(base.with_suffix(".png")), full_page=True)
+            html = await page.content()
+            base.with_suffix(".html").write_text(html, encoding="utf-8")
+            logger.warning("debug dump saved: %s.png / .html", base)
+        except Exception as exc:
+            logger.warning("debug dump failed: %s", exc)
+
     async def _delete_conversation(self, page: Page) -> None:
         try:
             options = await find_first(page, sel.CONVERSATION_OPTIONS, timeout_ms=3000)
@@ -363,11 +419,13 @@ class ChatGPTProvider:
         files = await self._collect_files(page)
 
         if wants_image and not images:
-            # deleting the conversation here would destroy the evidence —
-            # keep it so the admin can inspect what ChatGPT actually produced
+            # capture failed: dump diagnostics so the exact cause is visible,
+            # and keep the conversation in ChatGPT as evidence
+            await self._dump_debug(page, "image-capture-failed")
             raise ImageDownloadError(
                 "an image was requested but none could be captured from the "
-                "reply — the conversation was kept in ChatGPT for inspection"
+                "reply — a debug screenshot was saved to logs/ and the "
+                "conversation was kept in ChatGPT for inspection"
                 + (f"; reply text: {text[:200]}" if text else "")
             )
 
