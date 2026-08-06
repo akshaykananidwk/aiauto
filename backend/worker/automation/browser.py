@@ -72,16 +72,39 @@ class BrowserManager:
         return self._context
 
     async def get_page(self) -> Page:
-        if self._context is None:
-            await self.start()
-        assert self._context is not None
-        chatgpt_url = self.settings.chatgpt_url
-        for page in self._context.pages:
-            if chatgpt_url.split("//")[-1] in page.url:
+        # Chrome tabs/windows can be closed under us at any time (user closes
+        # the window, Chrome restarts, CDP target dies). On a closed-target
+        # error, drop the stale connection and reconnect once from scratch.
+        last_exc: Exception | None = None
+        for attempt in (1, 2):
+            try:
+                if self._context is None:
+                    await self.start()
+                assert self._context is not None
+                chatgpt_url = self.settings.chatgpt_url
+                for page in self._context.pages:
+                    if page.is_closed():
+                        continue
+                    if chatgpt_url.split("//")[-1] in page.url:
+                        return page
+                page = await self._context.new_page()
+                await page.goto(chatgpt_url, wait_until="domcontentloaded", timeout=60000)
                 return page
-        page = await self._context.new_page()
-        await page.goto(chatgpt_url, wait_until="domcontentloaded", timeout=60000)
-        return page
+            except Exception as exc:
+                last_exc = exc
+                if attempt == 1 and self._looks_closed(exc):
+                    logger.warning("Chrome target closed (%s) — reconnecting", exc)
+                    await self.stop()
+                    continue
+                raise
+        raise last_exc  # unreachable, keeps type checkers happy
+
+    @staticmethod
+    def _looks_closed(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return ("has been closed" in msg or "target closed" in msg
+                or "browser closed" in msg or "targetclosederror" in msg
+                or type(exc).__name__ == "TargetClosedError")
 
     async def is_connected(self) -> bool:
         try:

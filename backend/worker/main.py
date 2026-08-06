@@ -47,6 +47,20 @@ from worker.automation.chatgpt import ChatGPTProvider
 
 logger = get_logger("worker")
 
+# Chromium network-stack error markers: these mean the MASTER COMPUTER's
+# internet dropped, not that the prompt is bad — such jobs are re-queued
+# without consuming a retry and the worker pauses until the link returns.
+NETWORK_ERROR_MARKERS = (
+    "net::",
+    "err_address_unreachable",
+    "err_internet_disconnected",
+    "err_name_not_resolved",
+    "err_connection",
+    "err_timed_out",
+    "err_network_changed",
+    "err_proxy_connection_failed",
+)
+
 
 class Worker:
     def __init__(self) -> None:
@@ -83,19 +97,19 @@ class Worker:
             except Exception as exc:
                 logger.warning("heartbeat failed: %s", exc)
 
-            # the one-click updater replaced the code on disk? restart
-            # ourselves so the worker never keeps running an old version
+            # the one-click updater replaced the code on disk? exit cleanly —
+            # the supervisor (start.py) or run_worker.bat loop restarts us on
+            # the new code. NEVER use os.execv here: on Windows it leaves the
+            # old process's child running → TWO workers fighting over Chrome.
             current_version = self._read_version()
             if (started_version and current_version
                     and current_version != started_version
                     and self.current_job is None):
-                logger.info("platform updated %s → %s — restarting worker on new code",
+                logger.info("platform updated %s → %s — exiting so the supervisor "
+                            "restarts the worker on the new code",
                             started_version, current_version)
-                try:
-                    await self.provider.stop()
-                except Exception:
-                    pass
-                os.execv(sys.executable, [sys.executable, "-m", "worker.main"])
+                self.stopping.set()
+                return
             await asyncio.sleep(5)
 
     # ---------- helpers ----------
@@ -351,6 +365,32 @@ class Worker:
         # wedged page/session
         await self._restart_provider()
 
+        if any(m in error_msg.lower() for m in NETWORK_ERROR_MARKERS):
+            # the master computer's internet dropped — not the prompt's
+            # fault. Put it back in the queue WITHOUT burning a retry and
+            # pause the worker until the connection has a chance to return.
+            claimed = await self._claim_terminal(db, prompt_id_, {
+                "status": PromptStatus.waiting,
+                "error": "Internet connection lost on the master computer — "
+                         "the job will run again automatically once it is back.",
+            })
+            if not claimed:  # cancelled mid-run — do not resurrect it
+                await db.rollback()
+                await self.queue.clear_cancel_flag(prompt_id_)
+                return
+            await audit(db, "worker.network_wait",
+                        f"prompt {prompt_id_} postponed — internet unreachable "
+                        f"({error_msg[:120]})",
+                        user_id=user_id_, level="warning",
+                        meta={"prompt_id": prompt_id_})
+            await db.commit()
+            await self.queue.clear_cancel_flag(prompt_id_)
+            await self.queue.enqueue(prompt_id_, priority)
+            logger.warning("internet unreachable on this machine — waiting 60s "
+                           "before the next attempt")
+            await asyncio.sleep(60)
+            return
+
         if retryable and retry_count < admin.job_retry_count:
             claimed = await self._claim_terminal(db, prompt_id_, {
                 "status": PromptStatus.waiting,
@@ -404,6 +444,36 @@ class Worker:
         setup_logging()
         await init_db()
         logger.info("worker %s starting (ChatGPT browser automation)", self.worker_id)
+
+        # singleton per machine: two workers sharing one Chrome corrupt each
+        # other's pages (TargetClosedError chaos). Refuse to double-start —
+        # but a crashed predecessor leaves a heartbeat behind for up to 20s,
+        # so wait out the TTL and only yield to a twin that is STILL alive.
+        if not os.environ.get("AIAUTO_ALLOW_MULTI_WORKER"):
+            try:
+                hostname_prefix = f"{socket.gethostname()}-"
+
+                async def _twins() -> list[str]:
+                    return [w["id"] for w in await self.queue.live_workers()
+                            if w["id"].startswith(hostname_prefix)
+                            and w["id"] != self.worker_id]
+
+                twins = await _twins()
+                if twins:
+                    logger.warning(
+                        "another worker (%s) may be running on this computer — "
+                        "waiting %ss to see if it is real or a stale heartbeat",
+                        twins[0], 25)
+                    await asyncio.sleep(25)
+                    twins = await _twins()
+                if twins:
+                    logger.error(
+                        "another worker (%s) is already running on this computer — "
+                        "exiting to avoid fighting over the same Chrome. "
+                        "(set AIAUTO_ALLOW_MULTI_WORKER=1 to override)", twins[0])
+                    return
+            except Exception:
+                pass  # Redis unavailable — proceed; heartbeats will sort it out
         try:
             await self.provider.start()
         except Exception as exc:
@@ -426,6 +496,12 @@ class Worker:
             self.stopping.set()
             heartbeat.cancel()
             await self.provider.stop()
+            try:
+                # drop our heartbeat NOW — otherwise its 20s TTL makes the
+                # singleton guard block the supervisor's immediate restart
+                await self.queue.deregister_worker(self.worker_id)
+            except Exception:
+                pass
             await close_redis()
             logger.info("worker stopped")
 

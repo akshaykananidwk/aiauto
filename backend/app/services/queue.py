@@ -86,6 +86,11 @@ class QueueService:
         })
         await self.redis.expire(key, WORKER_TTL_SECONDS)
 
+    async def deregister_worker(self, worker_id: str) -> None:
+        """Remove a worker's heartbeat immediately on clean shutdown so a
+        supervisor restart isn't blocked by the dead predecessor's TTL."""
+        await self.redis.delete(WORKERS_PREFIX + worker_id)
+
     async def live_workers(self) -> list[dict]:
         out = []
         async for key in self.redis.scan_iter(f"{WORKERS_PREFIX}*", count=100):

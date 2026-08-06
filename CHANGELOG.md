@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.3.3 — Worker resilience (no more stuck queue after an error)
+
+- **Double-worker bug fixed (root cause of `TargetClosedError`)**: after a
+  platform update the worker restarted itself with `os.execv`, which on
+  Windows leaves the old process's child running — TWO workers then fight
+  over the same Chrome, closing each other's pages
+  (`Target page, context or browser has been closed`) and stealing each
+  other's queue pops, so a second prompt seemed to "not get picked up
+  until restart". The worker now simply exits after an update and the
+  supervisor (start.bat / run_worker.bat) restarts it on the new code
+- **One worker per computer, enforced**: on startup the worker checks the
+  live-worker registry for a twin on the same machine and yields instead
+  of fighting over Chrome (a stale heartbeat from a crashed predecessor is
+  waited out, never mistaken for a live twin); clean shutdown deregisters
+  the heartbeat immediately so restarts are never blocked.
+  `AIAUTO_ALLOW_MULTI_WORKER=1` overrides for multi-Chrome setups
+- **Internet outages no longer kill jobs**: a `net::ERR_*` failure
+  (address unreachable, DNS, disconnected, timed out…) now puts the
+  prompt straight back in the queue WITHOUT consuming a retry, and the
+  worker pauses 60s before trying again — jobs run automatically once
+  the master computer's connection returns instead of failing
+- **Chrome tab/window closed mid-job? Reconnect, don't die**: the browser
+  manager detects closed-target errors, drops the stale CDP connection
+  and reconnects from scratch before giving up
+- run_worker.bat now auto-restarts the worker in a loop (update/crash safe)
+- 13 new regression tests (96 total)
+
 ## 1.3.2 — Copy Image + download/save flow overhaul
 
 - **📋 Copy Image button** in the image viewer: copies the actual image
