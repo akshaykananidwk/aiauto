@@ -62,13 +62,16 @@ async def file_link(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Mint a short-lived direct URL for this file. The browser can use it
-    natively (<a download>, <img src>, new tab) so saving works everywhere,
-    including mobile galleries."""
+    """Mint short-lived direct URLs for this file:
+      * `url`      — forces a download (Content-Disposition: attachment)
+      * `view_url` — displays inline, so the browser's own right-click /
+        long-press "Save image" and "Copy image" work everywhere
+    """
     file = await _get_authorized_file(file_id, user, db)
     token = create_file_token(file_id)
     return {
         "url": f"/api/v1/files/{file_id}/download?st={token}",
+        "view_url": f"/api/v1/files/{file_id}/download?st={token}&inline=1",
         "filename": file.filename,
         "mime_type": file.mime_type,
         "expires_in_seconds": 15 * 60,
@@ -79,6 +82,7 @@ async def file_link(
 async def download_file(
     file_id: int,
     st: str | None = Query(default=None),
+    inline: bool = Query(default=False),
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     db: AsyncSession = Depends(get_db),
 ) -> FileResponse:
@@ -86,6 +90,12 @@ async def download_file(
     path = StorageService().abs_path(file.rel_path)
     if not path.exists():
         raise HTTPException(status.HTTP_410_GONE, "File no longer on disk")
+    if inline:
+        # display in the browser/tab — enables native save/copy gestures
+        return FileResponse(
+            path, media_type=file.mime_type,
+            headers={"Content-Disposition": f'inline; filename="{file.filename}"'},
+        )
     return FileResponse(path, media_type=file.mime_type, filename=file.filename)
 
 

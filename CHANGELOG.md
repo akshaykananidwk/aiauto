@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.3.2 — Copy Image + download/save flow overhaul
+
+- **📋 Copy Image button** in the image viewer: copies the actual image
+  to the clipboard (PNG, converted via canvas when needed) so it pastes
+  straight into Paint, Word, WhatsApp, Photoshop…; on plain-HTTP
+  deployments (where browsers block the clipboard API) it shows the
+  right-click → "Copy image" guidance instead
+- **Inline view mode**: file links now include a `view_url`
+  (Content-Disposition: inline) — the viewer and "Open in tab" display
+  the real image, so the browser's native right-click/long-press
+  Save image / Copy image gestures finally work; `url` still forces a
+  download. Mobile gallery: Open in tab → long-press → Save image
+- **Download feedback**: clicking Download now confirms where the file
+  goes (browser Downloads), removing the "nothing happened" impression
+- **Service worker rewritten network-first for the app shell**: the PWA
+  can no longer keep serving a stale cached frontend after a platform
+  update — a likely cause of fixes "not arriving" on staff machines;
+  hashed assets stay cache-first, API calls are never cached
+
 ## 1.3.1 — Image download & stability fixes (end-to-end pass)
 
 - **In-page image download**: images are now fetched INSIDE the ChatGPT

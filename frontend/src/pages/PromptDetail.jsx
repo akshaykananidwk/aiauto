@@ -7,8 +7,34 @@ export default function PromptDetail() {
   const { id } = useParams()
   const [prompt, setPrompt] = useState(null)
   const [thumbs, setThumbs] = useState({})
-  const [viewer, setViewer] = useState(null)   // {file, url} for the image modal
+  const [viewer, setViewer] = useState(null)   // {file, url, view_url} for the image modal
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+
+  // Copy the image itself to the clipboard so it pastes into Paint, Word,
+  // WhatsApp, Photoshop… Clipboard API needs HTTPS/localhost; on plain
+  // http we fall back to guiding the native right-click copy.
+  const copyImage = async () => {
+    setError(''); setNotice('')
+    try {
+      if (!navigator.clipboard || !window.ClipboardItem) throw new Error('clipboard-unavailable')
+      const resp = await fetch(viewer.view_url)
+      let blob = await resp.blob()
+      if (blob.type !== 'image/png') {
+        const bmp = await createImageBitmap(blob)
+        const canvas = document.createElement('canvas')
+        canvas.width = bmp.width
+        canvas.height = bmp.height
+        canvas.getContext('2d').drawImage(bmp, 0, 0)
+        blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'))
+      }
+      await navigator.clipboard.write([new window.ClipboardItem({ 'image/png': blob })])
+      setNotice('✅ Image copied — paste it into Paint, Word, WhatsApp, Photoshop…')
+    } catch {
+      setNotice('ℹ️ Right-click (or long-press) the image and choose "Copy image" — '
+        + 'the one-click Copy button needs the site to run on HTTPS.')
+    }
+  }
 
   const load = async () => {
     try {
@@ -54,7 +80,7 @@ export default function PromptDetail() {
     return () => clearInterval(timer)
   }, [active, id])
 
-  if (error) return <div className="alert error">{error}</div>
+  if (error && !prompt) return <div className="alert error">{error}</div>
   if (!prompt) return <div className="center-msg">Loading…</div>
 
   const results = prompt.files.filter(f => f.kind !== 'upload')
@@ -142,16 +168,27 @@ export default function PromptDetail() {
       {viewer && (
         <div className="viewer-overlay" onClick={() => setViewer(null)}>
           <div className="viewer" onClick={e => e.stopPropagation()}>
-            <img src={viewer.url} alt={viewer.file.filename} />
-            <div className="row between" style={{ marginTop: 12 }}>
+            {notice && <div className="alert info" style={{ marginBottom: 10 }}>{notice}</div>}
+            {error && <div className="alert error" style={{ marginBottom: 10 }}>{error}</div>}
+            {/* inline URL: right-click / long-press → Copy image, Save image */}
+            <img src={viewer.view_url || viewer.url} alt={viewer.file.filename} />
+            <div className="row between" style={{ marginTop: 12, flexWrap: 'wrap', gap: 8 }}>
               <span className="muted">{viewer.file.filename}</span>
-              <span className="row" style={{ gap: 8 }}>
-                {/* native link: works on desktop AND saves to mobile gallery */}
-                <a className="btn" href={viewer.url} download={viewer.file.filename}>⬇ Download</a>
-                <a className="btn secondary" href={viewer.url} target="_blank" rel="noreferrer">Open in tab</a>
-                <button className="btn ghost" onClick={() => setViewer(null)}>Close</button>
+              <span className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                <button className="btn" onClick={copyImage}>📋 Copy Image</button>
+                <a className="btn secondary" href={viewer.url} download={viewer.file.filename}
+                  onClick={() => setNotice('⬇ Download started — check the browser\'s '
+                    + 'Downloads (folder icon, top-right) / your Downloads folder.')}>
+                  ⬇ Download
+                </a>
+                <a className="btn secondary" href={viewer.view_url || viewer.url}
+                  target="_blank" rel="noreferrer">Open in tab</a>
+                <button className="btn ghost" onClick={() => { setViewer(null); setNotice(''); setError('') }}>Close</button>
               </span>
             </div>
+            <p className="muted" style={{ marginBottom: 0, marginTop: 8 }}>
+              Save to phone gallery: <b>Open in tab</b> → long-press the image → <i>Save image</i>.
+            </p>
           </div>
         </div>
       )}

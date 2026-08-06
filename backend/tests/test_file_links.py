@@ -56,3 +56,20 @@ async def test_download_still_works_with_jwt(client):
     res = await client.get(f"/api/v1/files/{file['id']}/download", headers=headers)
     assert res.status_code == 200
     assert res.content == b"hello file link"
+
+
+async def test_inline_vs_attachment_disposition(client):
+    """`url` must force a download; `view_url` must display inline so the
+    browser's native Save/Copy image gestures work."""
+    headers = await auth_headers(client, "alice")
+    file = await make_prompt_with_upload(client, headers)
+    link = (await client.get(f"/api/v1/files/{file['id']}/link", headers=headers)).json()
+    assert "inline=1" in link["view_url"]
+
+    download = await client.get(link["url"])
+    assert download.headers["content-disposition"].startswith("attachment")
+
+    view = await client.get(link["view_url"])
+    assert view.status_code == 200
+    assert view.headers["content-disposition"].startswith("inline")
+    assert view.content == b"hello file link"
