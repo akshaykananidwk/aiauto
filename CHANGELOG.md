@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.3.6 — THE image fix: finished images are never discarded again
+
+The first debug dump from production showed the real bug at last: the
+ChatGPT page had a COMPLETED, fully-rendered image on it, yet the worker
+sat "waiting for generation to finish" until the 480s timeout and threw
+the result away. The redesigned ChatGPT UI kept one of the
+completion-detector's conditions from ever becoming true.
+
+- **A finished image always wins now**, via three independent safety
+  nets in the completion detector:
+  1. a NEW page-wide image counts as the reply even if the
+     assistant-message containers are not recognised,
+  2. a stop/"creating" marker that stays visible while the reply
+     (including a fully-loaded image) has been frozen for 20+ seconds is
+     treated as decoration and ignored,
+  3. even on timeout, a fully-loaded image on the page is CAPTURED
+     instead of discarded — the timer can no longer throw away a result
+- **Wait-state telemetry**: while waiting, the worker logs the full
+  condition state every 30s, and a timeout error now carries the final
+  state (which marker was stuck, image count, text length) — the next
+  diagnosis is one glance, not another debug session
+- New-UI assistant-message selector fallbacks (`article[data-turn]`)
+
 ## 1.3.5 — Worker survives Chrome closing mid-job
 
 Production logs showed the exact remaining failure chain: Chrome (the

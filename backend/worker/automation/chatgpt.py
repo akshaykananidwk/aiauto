@@ -133,25 +133,26 @@ class ChatGPTProvider:
                 return count
         return 0
 
-    async def _stop_visible(self, page: Page) -> bool:
+    async def _stop_visible(self, page: Page) -> str | None:
+        """Matched stop-button selector, or None — the selector name goes
+        into diagnostics so a stuck marker is identifiable."""
         for css in sel.STOP_BUTTON:
             try:
                 if await page.locator(css).first.is_visible():
-                    return True
+                    return css
             except Exception:
                 continue
-        return False
+        return None
 
-    async def _image_generating(self, page: Page) -> bool:
-        """True while ChatGPT shows a 'Creating image…' style indicator —
-        the image is still rendering and must not be captured yet."""
+    async def _image_generating(self, page: Page) -> str | None:
+        """Matched 'Creating image…' indicator selector, or None."""
         for css in sel.IMAGE_GENERATING:
             try:
                 if await page.locator(css).first.is_visible():
-                    return True
+                    return css
             except Exception:
                 continue
-        return False
+        return None
 
     async def _image_state(self, page: Page, page_wide: bool = False) -> list[dict]:
         """Snapshot of candidate generated images: src + natural size +
@@ -188,7 +189,12 @@ class ChatGPTProvider:
         return (len(text), tuple(sorted((i["src"], i["w"], i["h"]) for i in images)))
 
     async def _wait_for_completion(
-        self, page: Page, timeout_seconds: int, baseline_count: int, wants_image: bool
+        self,
+        page: Page,
+        timeout_seconds: int,
+        baseline_count: int,
+        wants_image: bool,
+        image_baseline: int = 0,
     ) -> None:
         """Done when ALL of the following hold for ~3 consecutive seconds:
           * a NEW assistant message exists (count above the pre-send
@@ -200,27 +206,58 @@ class ChatGPTProvider:
           * there is actually SOMETHING to capture (non-empty text or at
             least one fully-loaded image).
 
-        Watching the images — not just the text — is essential: ChatGPT
-        keeps rendering a generated image long after the caption text has
-        stabilised, and image-only replies may contain no text at all."""
+        Hard-earned production lessons baked in:
+          * The ChatGPT UI changes; a redesigned message container can make
+            the assistant-message selectors match nothing, and a completed
+            image container can keep a 'generating' marker visible forever.
+            Neither may hold a finished image hostage: a NEW page-wide image
+            counts as the reply, a marker that stays visible while the reply
+            is completely frozen is treated as decoration, and even a
+            timeout still captures a fully-loaded image.
+          * Every 30s the full wait-state is logged, and the timeout error
+            carries the final state — failures stay diagnosable."""
         loop = asyncio.get_event_loop()
         deadline = loop.time() + timeout_seconds
         # allow generation to actually start
         await asyncio.sleep(2.0)
         last_sig: tuple | None = None
-        stable_ticks = 0
+        stable_ticks = 0   # stable AND no busy markers
+        frozen_ticks = 0   # stable regardless of busy markers
+        last_report = loop.time()
+        state: dict = {}
+
+        async def current_images() -> list[dict]:
+            images = await self._image_state(page)
+            if wants_image and not images:
+                # redesigned UIs can render the image outside the message
+                # container — any NEW page-wide image belongs to this reply
+                page_imgs = await self._image_state(page, page_wide=True)
+                if len(page_imgs) > image_baseline:
+                    return page_imgs
+            return images
+
         while loop.time() < deadline:
-            if await self._assistant_count(page) <= baseline_count:
+            count = await self._assistant_count(page)
+            reply_detected = count > baseline_count
+            images = await current_images()
+            if not reply_detected and not images:
+                state = {"reply_detected": False, "assistant_count": count}
+                if loop.time() - last_report >= 30:
+                    last_report = loop.time()
+                    logger.info("still waiting for the reply to appear: %s", state)
                 await asyncio.sleep(1.0)
-                continue  # our reply has not appeared yet
+                continue
 
             text = await self._last_message_text(page)
-            images = await self._image_state(page)
             sig = self._signature(text, images)
-
-            busy = await self._stop_visible(page) or await self._image_generating(page)
+            stop_marker = await self._stop_visible(page)
+            gen_marker = await self._image_generating(page)
+            busy = bool(stop_marker or gen_marker)
             images_loaded = all(i.get("done") and i.get("src", "").strip() for i in images)
             has_content = bool(text) or bool(images)
+
+            frozen_ticks = frozen_ticks + 1 if (
+                sig == last_sig and images_loaded and has_content) else 0
 
             # image replies settle longer: ChatGPT's progressive render can
             # keep src and natural size constant while pixels still fill in
@@ -231,11 +268,41 @@ class ChatGPTProvider:
                     return
             else:
                 stable_ticks = 0
+
+            # busy-marker override: a stop/'creating' marker that stays
+            # visible while the reply — including a fully-loaded image —
+            # has been frozen for 20+ s is decoration, not progress
+            if busy and images and images_loaded and frozen_ticks >= 20:
+                logger.warning(
+                    "completion override: reply frozen %ss with loaded "
+                    "image(s) but marker still visible (stop=%s generating=%s)"
+                    " — treating as done", frozen_ticks, stop_marker, gen_marker)
+                return
+
             last_sig = sig
+            state = {"reply_detected": reply_detected, "images": len(images),
+                     "images_loaded": images_loaded, "text_len": len(text),
+                     "stop_marker": stop_marker, "generating_marker": gen_marker,
+                     "stable_ticks": stable_ticks, "frozen_ticks": frozen_ticks}
+            if loop.time() - last_report >= 30:
+                last_report = loop.time()
+                logger.info("still waiting for completion: %s", state)
             await asyncio.sleep(1.0)
+
+        # deadline reached — never let the timer discard a usable result
+        images = await current_images()
+        text = await self._last_message_text(page)
+        if images and all(i.get("done") for i in images):
+            logger.warning("wait timed out but fully-loaded image(s) are on "
+                           "the page — capturing anyway (last state: %s)", state)
+            return
+        if not wants_image and text:
+            logger.warning("wait timed out but reply text exists — capturing "
+                           "anyway (last state: %s)", state)
+            return
         raise GenerationTimeoutError(
-            f"generation did not finish within {timeout_seconds}s"
-            + (" (image was still rendering)" if wants_image else "")
+            f"generation did not finish within {timeout_seconds}s — "
+            f"last state: {state}"
         )
 
     async def _last_message(self, page: Page) -> Locator | None:
@@ -411,9 +478,13 @@ class ChatGPTProvider:
         await self._new_chat(page)
         await self._attach_files(page, upload_paths)
         baseline = await self._assistant_count(page)
+        image_baseline = (
+            len(await self._image_state(page, page_wide=True)) if wants_image else 0
+        )
         await self._type_and_send(page, prompt_text)
         try:
-            await self._wait_for_completion(page, timeout_seconds, baseline, wants_image)
+            await self._wait_for_completion(page, timeout_seconds, baseline,
+                                            wants_image, image_baseline)
         except GenerationTimeoutError:
             # capture what the page ACTUALLY showed when time ran out —
             # this turns "it just never finished" into a diagnosable fact

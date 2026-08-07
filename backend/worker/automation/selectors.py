@@ -30,6 +30,8 @@ STOP_BUTTON = [
 ASSISTANT_MESSAGE = [
     "div[data-message-author-role='assistant']",
     "article[data-testid*='conversation-turn'] div[data-message-author-role='assistant']",
+    "article[data-turn='assistant']",
+    "div[data-turn='assistant']",
 ]
 
 MESSAGE_IMAGE = [
