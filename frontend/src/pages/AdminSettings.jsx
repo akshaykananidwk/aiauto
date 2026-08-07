@@ -63,6 +63,16 @@ export default function AdminSettings() {
         <label>Announcement banner (shown to everyone; empty = hidden)</label>
         <textarea style={{ minHeight: 60 }} value={settings.announcement || ''}
           onChange={e => setSettings(s => ({ ...s, announcement: e.target.value }))} />
+        <label style={{ marginTop: 12 }}>
+          Image instruction — appended in English to every “Generate image”
+          prompt before it is sent to the AI (empty = nothing appended)
+        </label>
+        <textarea style={{ minHeight: 90 }} value={settings.image_prompt_instruction || ''}
+          onChange={e => setSettings(s => ({ ...s, image_prompt_instruction: e.target.value }))} />
+        <span className="muted">
+          Staff can write their prompt in any language; this instruction makes
+          the AI reliably return a real image instead of a text answer.
+        </span>
         <div style={{ marginTop: 20 }}><button className="btn">Save Settings</button></div>
       </form>
     </div>

@@ -81,6 +81,18 @@ async def my_quota(
     return QuotaUsageOut(**await QuotaService(db).usage(user))
 
 
+@router.get("/image-instruction")
+async def image_instruction(
+    user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> dict:
+    """The English instruction automatically appended to image prompts, so
+    the web app can show staff exactly what will be sent."""
+    from app.services.app_settings import AppSettingsService
+
+    settings = await AppSettingsService(db).effective()
+    return {"instruction": settings.image_prompt_instruction}
+
+
 @router.get("/export")
 async def export_my_history(
     fmt: str = Query(default="json", pattern="^(json|csv)$"),

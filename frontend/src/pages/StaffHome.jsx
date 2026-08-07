@@ -31,6 +31,9 @@ export default function StaffHome() {
   const fileInput = useRef(null)
   const recognitionRef = useRef(null)
 
+  // English image instruction that the platform appends automatically
+  const [imageInstruction, setImageInstruction] = useState('')
+
   const load = async () => {
     try {
       const [list, dash, q] = await Promise.all([
@@ -43,6 +46,12 @@ export default function StaffHome() {
       setQuota(q)
     } catch (err) { setError(err.message) }
   }
+
+  useEffect(() => {
+    api('/prompts/image-instruction')
+      .then(r => setImageInstruction(r.instruction || ''))
+      .catch(() => {})
+  }, [])
 
   useEffect(() => {
     load()
@@ -129,6 +138,18 @@ export default function StaffHome() {
             onChange={e => setText(e.target.value)}
             required
           />
+          {wantsImage && imageInstruction && (
+            <div className="alert info" style={{ marginTop: 12 }}>
+              🎨 <b>Added automatically to your prompt:</b>
+              <div className="response-box" style={{ marginTop: 6, fontSize: 13 }}>
+                {imageInstruction}
+              </div>
+              <span className="muted">
+                Write your idea in any language — this English image
+                instruction is appended for you when the prompt is sent.
+              </span>
+            </div>
+          )}
           <div className="row between" style={{ marginTop: 12 }}>
             <div className="row">
               <button type="button" className={`btn ghost sm ${listening ? 'recording' : ''}`}

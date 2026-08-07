@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.4.0 — Automatic English image instruction
+
+Staff write their idea in their own language and tick "Generate image";
+the platform now appends a proper English image instruction to the copy
+that goes to the AI, so it reliably returns a real picture instead of a
+text answer or a follow-up question.
+
+- **Appended automatically at send time**: the staff member's own prompt
+  is never modified — in the database, the history or the prompt page it
+  stays exactly as typed; only the text sent to the AI carries the
+  instruction (and a retried job never gets it twice)
+- **Visible before sending**: ticking "Generate image" shows the exact
+  English text that will be added, so nothing is hidden
+- **Admin-editable**: Admin → Settings has an "Image instruction" box —
+  change the wording for the whole office, or empty it to switch the
+  feature off. Takes effect within seconds, no restart
+- Default instruction covers the real-world cases: understand Gujarati /
+  Hindi descriptions, generate the image directly in the reply, no
+  follow-up questions, never a text-only answer
+- 8 new tests (121 total), plus a real-browser check that the AI receives
+  "user text + instruction" while staff still see only their own words
+
 ## 1.3.6 — THE image fix: finished images are never discarded again
 
 The first debug dump from production showed the real bug at last: the

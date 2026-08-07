@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from app.services.prompt_builder import DEFAULT_IMAGE_INSTRUCTION
+
 
 class AdminSettings(BaseModel):
     """Runtime-configurable settings, stored in the app_settings table."""
@@ -19,6 +21,10 @@ class AdminSettings(BaseModel):
     default_daily_limit: int = Field(default=0, ge=0, le=1_000_000)
     default_monthly_limit: int = Field(default=0, ge=0, le=10_000_000)
     announcement: str = Field(default="", max_length=2000)
+    # appended (in English) to every "Generate image" prompt before it is
+    # sent to the AI — empty disables the feature
+    image_prompt_instruction: str = Field(
+        default=DEFAULT_IMAGE_INSTRUCTION, max_length=2000)
 
 
 class AdminSettingsUpdate(BaseModel):
@@ -35,3 +41,4 @@ class AdminSettingsUpdate(BaseModel):
     default_daily_limit: int | None = Field(default=None, ge=0, le=1_000_000)
     default_monthly_limit: int | None = Field(default=None, ge=0, le=10_000_000)
     announcement: str | None = Field(default=None, max_length=2000)
+    image_prompt_instruction: str | None = Field(default=None, max_length=2000)

@@ -35,6 +35,7 @@ from app.schemas.settings import AdminSettings
 from app.services import events
 from app.services.audit import audit
 from app.services.notify import NotificationService
+from app.services.prompt_builder import build_image_prompt
 from app.services.queue import QueueService
 from app.services.redis_client import close_redis
 from worker.automation.base import (
@@ -274,11 +275,19 @@ class Worker:
                     if f.kind == FileKind.upload and storage.abs_path(f.rel_path).exists()
                 ]
 
+                # image jobs get an explicit English image instruction
+                # appended — the staff member's own text is untouched in
+                # the DB/UI, only the copy sent to the AI carries it
+                text_to_send = prompt.prompt_text
+                if prompt.wants_image:
+                    text_to_send = build_image_prompt(
+                        prompt.prompt_text, admin.image_prompt_instruction)
+
                 try:
                     await self.provider.start()
                     result = await asyncio.wait_for(
                         self.provider.run_prompt(
-                            prompt.prompt_text,
+                            text_to_send,
                             upload_paths,
                             prompt.wants_image,
                             admin.response_timeout_seconds,
