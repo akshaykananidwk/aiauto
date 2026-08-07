@@ -4,7 +4,7 @@ import pytest
 
 from app.services.queue import QueueService
 from worker.automation.browser import BrowserManager
-from worker.main import NETWORK_ERROR_MARKERS
+from worker.main import NETWORK_ERROR_MARKERS, infra_failure_kind
 
 
 # ---- network-outage detection (jobs must NOT burn retries on these) ----
@@ -27,6 +27,23 @@ def test_network_errors_are_recognised(message):
 ])
 def test_normal_failures_are_not_network_errors(message):
     assert not any(m in message.lower() for m in NETWORK_ERROR_MARKERS)
+
+
+# ---- infra-failure classification (environment faults never burn retries) --
+
+@pytest.mark.parametrize("message,kind", [
+    # the EXACT failures reported from production:
+    ("TargetClosedError: Locator.count: Target page, context or browser "
+     "has been closed", "browser"),
+    ("Page.goto: net::ERR_ADDRESS_UNREACHABLE at https://chatgpt.com/", "network"),
+    ("Error: BrowserType.connect_over_cdp: connect ECONNREFUSED ::1:9222", "browser"),
+    ("Browser closed unexpectedly", "browser"),
+    ("ImageDownloadError: an image was requested but none could be captured", None),
+    ("LoginExpiredError: ChatGPT session is logged out", None),
+    ("GenerationTimeoutError: generation did not finish within 480s", None),
+])
+def test_infra_failure_classification(message, kind):
+    assert infra_failure_kind(message) == kind
 
 
 # ---- closed-target detection (BrowserManager reconnects instead of dying) ----

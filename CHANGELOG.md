@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.3.5 — Worker survives Chrome closing mid-job
+
+Production logs showed the exact remaining failure chain: Chrome (the
+debug-port one) closed mid-generation → `TargetClosedError` burned a
+retry → the worker's fallback launched a SECOND Chrome without the debug
+port (which start.bat could not find) → more `TargetClosedError`s until
+everything was restarted by hand.
+
+- **Worker now relaunches the REAL Chrome**: when the CDP endpoint is
+  gone, the worker starts Google Chrome itself with the same profile and
+  debug port (exactly like start.bat) and re-attaches — one Chrome,
+  always reachable, login preserved. The debug-less Playwright fallback
+  is now a true last resort (Chrome not installed)
+- **Browser-gone failures no longer burn retries**: `TargetClosedError`,
+  CDP `ECONNREFUSED` and friends are classified as environment faults —
+  the job goes straight back into the queue, Chrome is reopened, and the
+  prompt retries automatically (same treatment internet outages got in
+  1.3.3). No more jobs failing permanently because a window was closed
+  at the wrong moment
+- Clear user-facing status while it happens: "The AI browser on the
+  master computer closed mid-job — it was reopened and the job will
+  retry automatically."
+- 7 new tests (113 total)
+
 ## 1.3.4 — Image flow proven end-to-end + built-in diagnostics
 
 - **The website display flow is now PROVEN, not assumed**: a real-browser

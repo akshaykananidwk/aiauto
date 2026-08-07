@@ -61,6 +61,28 @@ NETWORK_ERROR_MARKERS = (
     "err_proxy_connection_failed",
 )
 
+# Chrome itself disappeared under the worker (window closed, crash, CDP
+# endpoint gone). Also environmental, not the prompt's fault — the browser
+# manager relaunches Chrome and the job goes straight back in the queue.
+BROWSER_GONE_MARKERS = (
+    "has been closed",
+    "targetclosederror",
+    "browser closed",
+    "browser has been disconnected",
+    "econnrefused",
+)
+
+
+def infra_failure_kind(error_msg: str) -> str | None:
+    """'network' | 'browser' when the failure is the environment's fault
+    (never burn a retry on these), else None."""
+    low = error_msg.lower()
+    if any(m in low for m in NETWORK_ERROR_MARKERS):
+        return "network"
+    if any(m in low for m in BROWSER_GONE_MARKERS):
+        return "browser"
+    return None
+
 
 class Worker:
     def __init__(self) -> None:
@@ -365,30 +387,38 @@ class Worker:
         # wedged page/session
         await self._restart_provider()
 
-        if any(m in error_msg.lower() for m in NETWORK_ERROR_MARKERS):
-            # the master computer's internet dropped — not the prompt's
-            # fault. Put it back in the queue WITHOUT burning a retry and
-            # pause the worker until the connection has a chance to return.
+        infra = infra_failure_kind(error_msg)
+        if infra:
+            # the environment failed (internet dropped / Chrome closed), not
+            # the prompt. Put it back in the queue WITHOUT burning a retry;
+            # _restart_provider above already relaunched Chrome if needed.
+            friendly = (
+                "Internet connection lost on the master computer — the job "
+                "will run again automatically once it is back."
+                if infra == "network" else
+                "The AI browser on the master computer closed mid-job — it "
+                "was reopened and the job will retry automatically."
+            )
             claimed = await self._claim_terminal(db, prompt_id_, {
                 "status": PromptStatus.waiting,
-                "error": "Internet connection lost on the master computer — "
-                         "the job will run again automatically once it is back.",
+                "error": friendly,
             })
             if not claimed:  # cancelled mid-run — do not resurrect it
                 await db.rollback()
                 await self.queue.clear_cancel_flag(prompt_id_)
                 return
-            await audit(db, "worker.network_wait",
-                        f"prompt {prompt_id_} postponed — internet unreachable "
+            await audit(db, f"worker.{infra}_wait",
+                        f"prompt {prompt_id_} postponed — {infra} problem "
                         f"({error_msg[:120]})",
                         user_id=user_id_, level="warning",
                         meta={"prompt_id": prompt_id_})
             await db.commit()
             await self.queue.clear_cancel_flag(prompt_id_)
             await self.queue.enqueue(prompt_id_, priority)
-            logger.warning("internet unreachable on this machine — waiting 60s "
-                           "before the next attempt")
-            await asyncio.sleep(60)
+            pause = 60 if infra == "network" else 15
+            logger.warning("%s problem on this machine — waiting %ss before "
+                           "the next attempt", infra, pause)
+            await asyncio.sleep(pause)
             return
 
         if retryable and retry_count < admin.job_retry_count:
