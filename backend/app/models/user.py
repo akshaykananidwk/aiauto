@@ -32,5 +32,7 @@ class User(TimestampMixin, Base):
     daily_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
     monthly_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
     telegram_chat_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # first-run guided tour shown & finished?
+    onboarded: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     prompts = relationship("Prompt", back_populates="user", lazy="noload")

@@ -42,6 +42,11 @@ class Prompt(TimestampMixin, Base):
     image_size: Mapped[str] = mapped_column(String(32), default="auto", nullable=False)
     # set when this job was created by "Regenerate" from another one
     parent_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # continuing the conversation of another job ("ask a follow-up")
+    follow_up_to: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, index=True)
+    # the AI chat this job ran in — lets a follow-up carry on in place
+    conversation_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     # internal helper jobs (e.g. prompt improvement) — hidden from history
     is_utility: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False, index=True)

@@ -41,3 +41,4 @@ class UserOut(UserBase):
     daily_limit: int | None = None
     monthly_limit: int | None = None
     telegram_chat_id: str | None = None
+    onboarded: bool = False

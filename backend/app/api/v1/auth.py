@@ -4,7 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 
 import jwt as pyjwt
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Body, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -103,6 +103,19 @@ async def logout(
 
 @router.get("/me", response_model=UserOut)
 async def me(user: User = Depends(get_current_user)) -> User:
+    return user
+
+
+@router.post("/onboarded", response_model=UserOut)
+async def set_onboarded(
+    done: bool = Body(default=True, embed=True),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """Mark the guided tour finished (or replay it by passing done=false)."""
+    user.onboarded = done
+    await db.commit()
+    await db.refresh(user)
     return user
 
 

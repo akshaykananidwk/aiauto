@@ -87,6 +87,21 @@ class ChatGPTProvider:
         except PWTimeout:
             logger.warning("navigation to new chat timed out; continuing on current page")
 
+    async def _open_conversation(self, page: Page, url: str) -> bool:
+        """Reopen an existing chat so a follow-up continues in the same
+        thread. False when it is gone (deleted/expired) — the caller then
+        falls back to a fresh chat carrying the previous exchange."""
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            await asyncio.sleep(1.5)
+            if await self._assistant_count(page) > 0:
+                logger.info("continuing the existing conversation %s", url)
+                return True
+            logger.warning("conversation %s has no messages — starting a new chat", url)
+        except Exception as exc:
+            logger.warning("could not reopen conversation %s (%s) — new chat", url, exc)
+        return False
+
     async def _attach_files(self, page: Page, paths: list[Path]) -> None:
         if not paths:
             return
@@ -473,9 +488,14 @@ class ChatGPTProvider:
         upload_paths: list[Path],
         wants_image: bool,
         timeout_seconds: int,
+        continue_url: str | None = None,
     ) -> AIResult:
         page = await self._ensure_ready()
-        await self._new_chat(page)
+        # a follow-up continues in its original chat when that still exists;
+        # otherwise run_prompt's caller has already prefixed the context
+        continued = bool(continue_url) and await self._open_conversation(page, continue_url)
+        if not continued:
+            await self._new_chat(page)
         await self._attach_files(page, upload_paths)
         baseline = await self._assistant_count(page)
         image_baseline = (
@@ -506,7 +526,19 @@ class ChatGPTProvider:
                 + (f"; reply text: {text[:200]}" if text else "")
             )
 
-        if self.delete_conversations:
+        # capture the chat URL BEFORE any deletion, so a follow-up can try
+        # to continue here (and knows it is gone if the chat was deleted)
+        conversation_url = ""
+        if not self.delete_conversations:
+            try:
+                url = page.url
+                if url and "chatgpt" in url and url.rstrip("/") != \
+                        self.settings.chatgpt_url.rstrip("/"):
+                    conversation_url = url
+            except Exception:
+                pass
+        else:
             await self._delete_conversation(page)
 
-        return AIResult(text=text, images=images, files=files)
+        return AIResult(text=text, images=images, files=files,
+                        conversation_url=conversation_url)

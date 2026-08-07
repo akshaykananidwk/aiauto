@@ -82,6 +82,22 @@ def build_image_prompt(
     return f"{text}{SEPARATOR}{suffix}"
 
 
+def build_follow_up_prompt(
+    prompt_text: str, previous_prompt: str, previous_answer: str
+) -> str:
+    """Fallback for a follow-up whose original chat is gone (deleted after
+    the run): carry the previous exchange as context so the AI still knows
+    what "make it bluer" refers to."""
+    context = (
+        "Continuing an earlier request. This was asked before:\n"
+        f"{(previous_prompt or '').strip()[:4000]}\n\n"
+        "And this was the answer:\n"
+        f"{(previous_answer or '').strip()[:4000] or '(an image was generated)'}\n\n"
+        "Now do the following, using the above as context:\n"
+    )
+    return context + (prompt_text or "").strip()
+
+
 def build_improve_prompt(prompt_text: str, wants_image: bool) -> str:
     """The helper job that turns a rough request into a better prompt."""
     head = IMPROVE_IMAGE_PROMPT if wants_image else IMPROVE_TEXT_PROMPT

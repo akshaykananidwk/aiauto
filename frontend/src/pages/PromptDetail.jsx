@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { api, downloadFile, fileLink, thumbnailUrl } from '../api'
+import Markdown, { toHtml } from '../Markdown'
 import { connectEvents } from '../ws'
 
 export default function PromptDetail() {
@@ -12,6 +13,71 @@ export default function PromptDetail() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [stage, setStage] = useState('')       // live sub-state while processing
+  const [rawText, setRawText] = useState(false)
+  const [audioBusy, setAudioBusy] = useState(false)
+  const [thread, setThread] = useState([])
+  const [followUp, setFollowUp] = useState('')
+  const [followUpImage, setFollowUpImage] = useState(false)
+  const [sendingFollowUp, setSendingFollowUp] = useState(false)
+
+  // Copy WITH formatting so it pastes into Word/email as real bold,
+  // lists and tables; plain text is included for editors that want it.
+  const copyAnswer = async () => {
+    setError(''); setNotice('')
+    try {
+      const html = toHtml(prompt.response_text)
+      if (navigator.clipboard && window.ClipboardItem) {
+        await navigator.clipboard.write([new window.ClipboardItem({
+          'text/html': new Blob([html], { type: 'text/html' }),
+          'text/plain': new Blob([prompt.response_text], { type: 'text/plain' }),
+        })])
+        setNotice('✅ Copied with formatting — paste into Word, email, docs…')
+        return
+      }
+      await navigator.clipboard.writeText(prompt.response_text)
+      setNotice('✅ Copied as plain text.')
+    } catch {
+      try {
+        await navigator.clipboard.writeText(prompt.response_text)
+        setNotice('✅ Copied as plain text.')
+      } catch { setError('Could not copy — select the text and press Ctrl+C.') }
+    }
+  }
+
+  const downloadAudio = async () => {
+    setAudioBusy(true); setError(''); setNotice('🎵 Generating the audio…')
+    try {
+      const res = await api(`/prompts/${id}/audio`, { raw: true })
+      if (!res.ok) {
+        let detail = `Audio failed (${res.status})`
+        try { detail = (await res.json()).detail || detail } catch { /* keep */ }
+        throw new Error(detail)
+      }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `answer_${id.slice(0, 8)}.${blob.type.includes('mpeg') ? 'mp3' : 'wav'}`
+      document.body.appendChild(a); a.click(); a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 60000)
+      setNotice('🎵 Audio downloaded — check your Downloads folder.')
+    } catch (err) { setNotice(''); setError(err.message) }
+    finally { setAudioBusy(false) }
+  }
+
+  const sendFollowUp = async () => {
+    setSendingFollowUp(true); setError('')
+    try {
+      const created = await api(`/prompts/${id}/follow-up`, {
+        method: 'POST',
+        body: { prompt_text: followUp, wants_image: followUpImage,
+                image_size: prompt.image_size || 'auto' },
+      })
+      setFollowUp(''); setFollowUpImage(false)
+      navigate(`/prompt/${created.id}`)
+    } catch (err) { setError(err.message) }
+    finally { setSendingFollowUp(false) }
+  }
 
   // Copy the image itself to the clipboard so it pastes into Paint, Word,
   // WhatsApp, Photoshop… Clipboard API needs HTTPS/localhost; on plain
@@ -42,6 +108,9 @@ export default function PromptDetail() {
     try {
       const p = await api(`/prompts/${id}`)
       setPrompt(p)
+      if (p.status === 'completed') {
+        api(`/prompts/${id}/thread`).then(setThread).catch(() => {})
+      }
       for (const f of p.files) {
         const isImage = f.kind === 'result_image' || f.mime_type?.startsWith('image/')
         if ((f.has_thumbnail || isImage) && !thumbs[f.id]) {
@@ -147,6 +216,12 @@ export default function PromptDetail() {
               {prompt.parent_id.slice(0, 8)}</Link>
           </p>
         )}
+        {prompt.follow_up_to && (
+          <p className="muted">
+            💬 Follow-up to <Link to={`/prompt/${prompt.follow_up_to}`}>
+              {prompt.follow_up_to.slice(0, 8)}</Link>
+          </p>
+        )}
         {uploads.length > 0 && (
           <p className="muted">Attached: {uploads.map(f => f.filename).join(', ')}</p>
         )}
@@ -156,17 +231,71 @@ export default function PromptDetail() {
         <div className="card">
           <div className="row between">
             <h2>AI Response</h2>
-            <div className="row" style={{ gap: 6 }}>
-              <button className="btn ghost sm" title="Read aloud" onClick={() => {
+            <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+              <button className="btn ghost sm" title="Read aloud in this browser" onClick={() => {
                 if (!window.speechSynthesis) return
                 if (window.speechSynthesis.speaking) { window.speechSynthesis.cancel(); return }
                 window.speechSynthesis.speak(new SpeechSynthesisUtterance(prompt.response_text.slice(0, 3000)))
-              }}>🔊</button>
-              <button className="btn ghost sm" title="Copy" onClick={() =>
-                navigator.clipboard?.writeText(prompt.response_text)}>📋 Copy</button>
+              }}>🔊 Listen</button>
+              <button className="btn ghost sm" title="Download the answer as an audio file"
+                disabled={audioBusy} onClick={downloadAudio}>
+                {audioBusy ? '🎵 Preparing…' : '🎵 Audio'}
+              </button>
+              <button className="btn ghost sm" title="Copy with formatting (Word, email…)"
+                onClick={copyAnswer}>📋 Copy</button>
+              <button className="btn ghost sm" title="Show the raw text"
+                onClick={() => setRawText(r => !r)}>{rawText ? '📄 Formatted' : '</> Raw'}</button>
             </div>
           </div>
-          <div className="response-box">{prompt.response_text}</div>
+          {rawText
+            ? <div className="response-box">{prompt.response_text}</div>
+            : <div className="response-box"><Markdown text={prompt.response_text} /></div>}
+        </div>
+      )}
+
+      {prompt.status === 'completed' && (
+        <div className="card">
+          <div className="row between">
+            <h2 style={{ margin: 0 }}>💬 Ask a follow-up</h2>
+            {thread.length > 0 && <span className="muted">{thread.length} so far</span>}
+          </div>
+          <p className="muted" style={{ marginTop: 4 }}>
+            Continue this conversation — the AI remembers what was asked and
+            answered above, so "make it shorter" or "same but in blue" works.
+          </p>
+          <textarea value={followUp} onChange={e => setFollowUp(e.target.value)}
+            placeholder="e.g. Make it shorter · Same image but at sunset · Explain point 3" />
+          <div className="row between" style={{ marginTop: 10, flexWrap: 'wrap', gap: 8 }}>
+            <label className="row" style={{ margin: 0 }}>
+              <input type="checkbox" style={{ width: 'auto' }} checked={followUpImage}
+                onChange={e => setFollowUpImage(e.target.checked)} />
+              &nbsp;Generate image
+            </label>
+            <button className="btn" disabled={!followUp.trim() || sendingFollowUp}
+              onClick={sendFollowUp}>
+              {sendingFollowUp ? 'Sending…' : 'Send follow-up →'}
+            </button>
+          </div>
+          {thread.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <h3>Follow-ups</h3>
+              <div className="table-scroll">
+                <table>
+                  <thead><tr><th>Question</th><th>Status</th><th>When</th></tr></thead>
+                  <tbody>
+                    {thread.map(t => (
+                      <tr key={t.id}>
+                        <td><Link to={`/prompt/${t.id}`}>{t.prompt_text.slice(0, 70)}
+                          {t.prompt_text.length > 70 ? '…' : ''}</Link></td>
+                        <td><span className={`badge ${t.status}`}>{t.status}</span></td>
+                        <td className="muted">{new Date(t.created_at).toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

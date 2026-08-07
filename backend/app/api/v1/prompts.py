@@ -231,6 +231,80 @@ async def cancel_prompt(
     return to_out(prompt)
 
 
+class FollowUpRequest(BaseModel):
+    prompt_text: str = Field(min_length=1, max_length=32000)
+    wants_image: bool = False
+    image_size: str = Field(default="auto", max_length=32)
+
+
+@router.post("/{prompt_id}/follow-up", response_model=PromptOut, status_code=201)
+async def follow_up(
+    body: FollowUpRequest,
+    prompt: Prompt = Depends(get_accessible_prompt),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> PromptOut:
+    """Ask another question about the same job — the AI continues the
+    original conversation (or is given it as context if that chat is gone)."""
+    if prompt.status != PromptStatus.completed:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "only completed jobs can be followed up")
+    data = PromptCreate(
+        prompt_text=body.prompt_text, wants_image=body.wants_image,
+        image_size=body.image_size, computer_name=prompt.computer_name,
+        # the thread root: following up on a follow-up keeps one chain
+        follow_up_to=prompt.id,
+    )
+    try:
+        new_prompt = await PromptService(db).submit(user, data, [])
+    except QuotaExceededError as exc:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, str(exc))
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    position = await QueueService().position(new_prompt.id)
+    return to_out(new_prompt, position)
+
+
+@router.get("/{prompt_id}/thread", response_model=list[PromptOut])
+async def prompt_thread(
+    prompt: Prompt = Depends(get_accessible_prompt),
+    db: AsyncSession = Depends(get_db),
+) -> list[PromptOut]:
+    """Follow-up jobs that continue this one, oldest first."""
+    from sqlalchemy import select
+
+    rows = (await db.execute(
+        select(Prompt).where(Prompt.follow_up_to == prompt.id)
+        .order_by(Prompt.created_at)
+    )).scalars().unique().all()
+    return [to_out(p) for p in rows]
+
+
+@router.get("/{prompt_id}/audio")
+async def prompt_audio(
+    prompt: Prompt = Depends(get_accessible_prompt),
+    db: AsyncSession = Depends(get_db),
+):
+    """Download the answer as an audio file (generated once, then cached)."""
+    from fastapi.responses import FileResponse
+
+    from app.services.app_settings import AppSettingsService
+    from app.services.tts import TTSUnavailable, synthesize
+
+    if not (prompt.response_text or "").strip():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "this job has no text answer to read aloud")
+    settings = await AppSettingsService(db).effective()
+    try:
+        path, mime = await synthesize(
+            prompt.id, prompt.response_text,
+            engine=settings.tts_engine, language=settings.tts_language)
+    except TTSUnavailable as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc))
+    return FileResponse(path, media_type=mime,
+                        filename=f"answer_{prompt.id[:8]}{path.suffix}")
+
+
 @router.post("/{prompt_id}/regenerate", response_model=PromptOut, status_code=201)
 async def regenerate_prompt(
     prompt: Prompt = Depends(get_accessible_prompt),

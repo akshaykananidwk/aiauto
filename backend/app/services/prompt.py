@@ -65,6 +65,7 @@ class PromptService:
             wants_image=data.wants_image,
             image_size=data.image_size or DEFAULT_PRESET,
             parent_id=data.parent_id,
+            follow_up_to=data.follow_up_to,
             is_utility=data.is_utility,
             # staff cannot raise their own priority; admins can. Utility
             # jobs (prompt improvement) are short and interactive, so they

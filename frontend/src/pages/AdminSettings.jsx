@@ -85,6 +85,28 @@ export default function AdminSettings() {
           Automatic daily cleanup of old images/uploads to free disk space.
           Prompt text and history are always kept — only the files are removed.
         </span>
+        <div className="grid cols-2" style={{ marginTop: 12 }}>
+          <div>
+            <label>Answer audio (download voice)</label>
+            <select value={settings.tts_engine || 'offline'}
+              onChange={e => setSettings(s => ({ ...s, tts_engine: e.target.value }))}>
+              <option value="offline">Offline — this computer's own voices (private)</option>
+              <option value="online">Online — better Gujarati/Hindi, sends text to Google</option>
+              <option value="off">Off — no audio downloads</option>
+            </select>
+          </div>
+          <div>
+            <label>Audio language (online engine)</label>
+            <input value={settings.tts_language || 'en'} placeholder="en / gu / hi"
+              onChange={e => setSettings(s => ({ ...s, tts_language: e.target.value }))} />
+          </div>
+        </div>
+        <span className="muted">
+          "Offline" uses the voices installed in Windows and nothing leaves your
+          network. "Online" sounds much better for Gujarati and Hindi, but the
+          answer text is sent to Google's public speech service — pick it only
+          if that is acceptable for your content.
+        </span>
         <div style={{ marginTop: 20 }}><button className="btn">Save Settings</button></div>
       </form>
     </div>

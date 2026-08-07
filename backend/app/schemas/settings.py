@@ -28,6 +28,11 @@ class AdminSettings(BaseModel):
     # delete result/upload FILES older than N days (prompt text is kept
     # so history stays readable). 0 = never delete anything
     file_retention_days: int = Field(default=0, ge=0, le=3650)
+    # answer audio: "offline" = the computer's own voices (nothing leaves
+    # the network), "online" = Google TTS (better Gujarati/Hindi, but the
+    # answer text is sent to Google), "off" = no audio downloads
+    tts_engine: str = Field(default="offline", pattern="^(offline|online|off)$")
+    tts_language: str = Field(default="en", max_length=8)
 
 
 class AdminSettingsUpdate(BaseModel):
@@ -46,3 +51,5 @@ class AdminSettingsUpdate(BaseModel):
     announcement: str | None = Field(default=None, max_length=2000)
     image_prompt_instruction: str | None = Field(default=None, max_length=2000)
     file_retention_days: int | None = Field(default=None, ge=0, le=3650)
+    tts_engine: str | None = Field(default=None, pattern="^(offline|online|off)$")
+    tts_language: str | None = Field(default=None, max_length=8)

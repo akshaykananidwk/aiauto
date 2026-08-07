@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.6.0 — Conversations, formatted answers, audio and a guided tour
+
+- **💬 Ask a follow-up**: continue a finished job — "make it shorter",
+  "same image at sunset", "explain point 3" — without rewriting the
+  whole request. The AI carries on in the SAME chat when that still
+  exists; if the conversation was deleted after the run, the previous
+  question and answer are sent along as context, so a follow-up always
+  makes sense. Follow-ups are linked both ways and listed as a thread
+- **Formatted answers**: replies now render as real rich text —
+  headings, **bold**, lists, tables, quotes and code blocks — with a
+  `</> Raw` toggle for the original text. **Copy** now copies WITH
+  formatting, so pasting into Word or email keeps bold, lists and
+  tables (plain text is included for editors that prefer it).
+  The renderer builds React elements, never HTML, so no answer can
+  inject markup into the page
+- **🎵 Answer audio**: download any answer as an audio file. Two engines,
+  chosen in Admin → Settings: *offline* (the computer's own Windows
+  voices — nothing leaves your network, the default) or *online*
+  (much better Gujarati/Hindi, but the answer text is sent to Google's
+  public speech service — opt-in, never automatic). Files are generated
+  once and cached; markdown decoration is stripped so the voice does not
+  read "##" aloud. The instant in-browser 🔊 Listen button stays
+- **👋 Guided tour**: new users get a short step-by-step walkthrough on
+  their first login (with extra steps for administrators). It is stored
+  per account, so it does not reappear on another computer, and the "?"
+  button in the header replays it any time
+- Migration 0006; 24 new tests (176 total); verified end to end in a
+  real browser (10 checks) including a real generated audio file
+
 ## 1.5.0 — Productivity release (9 requested features)
 
 **Images**

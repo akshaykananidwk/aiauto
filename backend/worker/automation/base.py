@@ -10,6 +10,8 @@ class AIResult:
     # downloaded artifacts, moved into storage by the worker
     images: list[tuple[str, bytes]] = field(default_factory=list)  # (filename, data)
     files: list[tuple[str, bytes]] = field(default_factory=list)
+    # the chat this ran in — a follow-up can carry on in the same thread
+    conversation_url: str = ""
 
 
 class LoginExpiredError(RuntimeError):

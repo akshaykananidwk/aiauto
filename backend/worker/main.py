@@ -36,7 +36,7 @@ from app.services import events
 from app.services.audit import audit
 from app.services.image_presets import fit_to_preset
 from app.services.notify import NotificationService
-from app.services.prompt_builder import build_image_prompt
+from app.services.prompt_builder import build_follow_up_prompt, build_image_prompt
 from app.services.queue import QueueService
 from app.services.redis_client import close_redis
 from worker.automation.base import (
@@ -299,6 +299,18 @@ class Worker:
                         image_size=prompt.image_size,
                         has_reference_images=has_refs)
 
+                # follow-up: continue in the original chat when it still
+                # exists, otherwise carry the previous exchange as context
+                continue_url = None
+                if prompt.follow_up_to:
+                    parent = await db.get(Prompt, prompt.follow_up_to)
+                    if parent is not None:
+                        continue_url = parent.conversation_url or None
+                        if not continue_url:
+                            text_to_send = build_follow_up_prompt(
+                                text_to_send, parent.prompt_text,
+                                parent.response_text or "")
+
                 try:
                     await self.provider.start()
                     result = await asyncio.wait_for(
@@ -307,6 +319,7 @@ class Worker:
                             upload_paths,
                             prompt.wants_image,
                             admin.response_timeout_seconds,
+                            continue_url=continue_url,
                         ),
                         timeout=admin.job_timeout_seconds,
                     )
@@ -326,6 +339,7 @@ class Worker:
                 claimed = await self._claim_terminal(db, prompt.id, {
                     "status": PromptStatus.completed,
                     "response_text": result.text,
+                    "conversation_url": result.conversation_url or None,
                     "completed_at": datetime.now(timezone.utc),
                 })
                 if not claimed:

@@ -2,6 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useState } fr
 import { HashRouter, Routes, Route, Navigate, NavLink, Link } from 'react-router-dom'
 import { api, getTokens, setTokens } from './api'
 import { connectEvents } from './ws'
+import Onboarding from './Onboarding'
 import Login from './pages/Login'
 import StaffHome from './pages/StaffHome'
 import PromptDetail from './pages/PromptDetail'
@@ -36,6 +37,8 @@ function Shell({ children }) {
   const [unread, setUnread] = useState(0)
   const [announcement, setAnnouncement] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
+  // guided tour: automatic on the first login, replayable from "?"
+  const [showTour, setShowTour] = useState(() => user && !user.onboarded)
   const isAdmin = user?.role === 'admin'
 
   const loadUnread = useCallback(async () => {
@@ -84,6 +87,8 @@ function Shell({ children }) {
             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
             {theme === 'dark' ? '☀' : '🌙'}
           </button>
+          <button className="btn ghost sm" title="How to use AIAuto (guided tour)"
+            onClick={() => setShowTour(true)}>?</button>
           <Link to="/notifications" className="bell" title="Notifications">
             🔔{unread > 0 && <span className="bell-badge">{unread > 99 ? '99+' : unread}</span>}
           </Link>
@@ -93,6 +98,7 @@ function Shell({ children }) {
       </header>
       {announcement && <div className="announcement">📢 {announcement}</div>}
       <main className="content">{children}</main>
+      {showTour && <Onboarding user={user} onFinish={() => setShowTour(false)} />}
     </div>
   )
 }

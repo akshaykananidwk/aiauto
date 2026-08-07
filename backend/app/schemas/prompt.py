@@ -15,6 +15,7 @@ class PromptCreate(BaseModel):
     computer_name: str = Field(default="", max_length=128)
     image_size: str = Field(default="auto", max_length=32)
     parent_id: str | None = Field(default=None, max_length=32)
+    follow_up_to: str | None = Field(default=None, max_length=32)
     is_utility: bool = False
 
 
@@ -42,6 +43,8 @@ class PromptOut(BaseModel):
     wants_image: bool
     image_size: str = "auto"
     parent_id: str | None = None
+    follow_up_to: str | None = None
+    has_audio: bool = False
     error: str | None = None
     retry_count: int
     computer_name: str
