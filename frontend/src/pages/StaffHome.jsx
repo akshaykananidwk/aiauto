@@ -33,17 +33,30 @@ export default function StaffHome() {
 
   // English image instruction that the platform appends automatically
   const [imageInstruction, setImageInstruction] = useState('')
+  const [sizes, setSizes] = useState([])
+  const [imageSize, setImageSize] = useState('auto')
+  const [improving, setImproving] = useState(false)
+  const [originalText, setOriginalText] = useState(null)  // undo after improve
+  const [historySearch, setHistorySearch] = useState('')
 
-  const load = async () => {
+  // Searching only needs the list — reloading stats/quota on every
+  // keystroke would triple the API traffic for nothing.
+  const loadPrompts = async (search = historySearch) => {
+    const params = new URLSearchParams({ page_size: '15' })
+    if (search.trim()) params.set('search', search.trim())
+    const list = await api(`/prompts?${params}`)
+    setPrompts(list.items)
+  }
+
+  const load = async (search = historySearch) => {
     try {
-      const [list, dash, q] = await Promise.all([
-        api('/prompts?page_size=15'),
+      const [dash, q] = await Promise.all([
         api('/dashboard/staff'),
         api('/prompts/quota'),
       ])
-      setPrompts(list.items)
       setStats(dash)
       setQuota(q)
+      await loadPrompts(search)
     } catch (err) { setError(err.message) }
   }
 
@@ -51,14 +64,54 @@ export default function StaffHome() {
     api('/prompts/image-instruction')
       .then(r => setImageInstruction(r.instruction || ''))
       .catch(() => {})
+    api('/prompts/image-sizes')
+      .then(r => setSizes(r.presets || []))
+      .catch(() => {})
   }, [])
+
+  // debounce history search so typing doesn't hammer the API
+  useEffect(() => {
+    const timer = setTimeout(
+      () => loadPrompts(historySearch).catch(err => setError(err.message)), 400)
+    return () => clearTimeout(timer)
+  }, [historySearch])
+
+  // Ask the AI to rewrite the prompt properly. Runs as a short
+  // high-priority job, so it usually returns within seconds.
+  const improvePrompt = async () => {
+    if (!text.trim() || improving) return
+    setImproving(true); setError(''); setNotice('✨ Improving your prompt…')
+    try {
+      const job = await api('/prompts/improve', {
+        method: 'POST', body: { prompt_text: text, wants_image: wantsImage },
+      })
+      const deadline = Date.now() + 180000
+      while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 2500))
+        const res = await api(`/prompts/improve/${job.id}`)
+        if (res.status === 'completed' && res.improved_text) {
+          setOriginalText(text)
+          setText(res.improved_text)
+          setNotice('✨ Prompt improved — check it, edit if you like, then send.')
+          return
+        }
+        if (['failed', 'cancelled'].includes(res.status)) {
+          throw new Error(res.error || 'the improver job did not finish')
+        }
+      }
+      throw new Error('improvement is taking too long — try again in a moment')
+    } catch (err) {
+      setNotice(''); setError(`Could not improve the prompt: ${err.message}`)
+    } finally { setImproving(false) }
+  }
 
   useEffect(() => {
     load()
     const disconnect = connectEvents((event) => {
       const label = STATUS_LABELS[event.type]
       if (label) setNotice(`${label} (${event.data?.prompt_id?.slice(0, 8) || ''})`)
-      if (event.type?.startsWith('prompt.')) load()
+      // live events only need the list; stats/quota refresh on the timer
+      if (event.type?.startsWith('prompt.')) loadPrompts().catch(() => {})
     })
     // polling safety net: WS events are best-effort, so refresh the list
     // periodically to catch any status change a lost event would hide
@@ -97,9 +150,10 @@ export default function StaffHome() {
       fd.append('prompt_text', text)
       fd.append('wants_image', wantsImage)
       fd.append('computer_name', navigator.userAgent.slice(0, 120))
+      if (wantsImage) fd.append('image_size', imageSize)
       for (const f of files) fd.append('files', f)
       await api('/prompts', { method: 'POST', formData: fd })
-      setText(''); setFiles([]); setWantsImage(false)
+      setText(''); setFiles([]); setWantsImage(false); setOriginalText(null)
       if (fileInput.current) fileInput.current.value = ''
       setNotice('Prompt submitted — you will see live status updates here.')
       load()
@@ -138,6 +192,32 @@ export default function StaffHome() {
             onChange={e => setText(e.target.value)}
             required
           />
+          {originalText !== null && (
+            <div className="row" style={{ marginTop: 8, gap: 8 }}>
+              <button type="button" className="btn ghost sm"
+                onClick={() => { setText(originalText); setOriginalText(null); setNotice('') }}>
+                ↩ Undo improve (back to my wording)
+              </button>
+            </div>
+          )}
+
+          {wantsImage && (
+            <div className="row" style={{ marginTop: 12, gap: 10, flexWrap: 'wrap' }}>
+              <div style={{ minWidth: 260 }}>
+                <label style={{ marginBottom: 4 }}>Output size</label>
+                <select value={imageSize} onChange={e => setImageSize(e.target.value)}>
+                  {sizes.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
+                </select>
+              </div>
+              {files.length > 0 && (
+                <div className="alert info" style={{ margin: 0, alignSelf: 'flex-end' }}>
+                  🖼 Attached image(s) will be used as a <b>reference</b> —
+                  "make one like this".
+                </div>
+              )}
+            </div>
+          )}
+
           {wantsImage && imageInstruction && (
             <div className="alert info" style={{ marginTop: 12 }}>
               🎨 <b>Added automatically to your prompt:</b>
@@ -152,6 +232,10 @@ export default function StaffHome() {
           )}
           <div className="row between" style={{ marginTop: 12 }}>
             <div className="row">
+              <button type="button" className="btn secondary sm" disabled={improving || !text.trim()}
+                onClick={improvePrompt} title="Let the AI rewrite this into a better prompt">
+                {improving ? '✨ Improving…' : '✨ Improve prompt'}
+              </button>
               <button type="button" className={`btn ghost sm ${listening ? 'recording' : ''}`}
                 onClick={toggleVoice} title="Voice input">
                 {listening ? '⏹ Stop' : '🎤'}
@@ -175,6 +259,9 @@ export default function StaffHome() {
       <div className="card">
         <div className="row between">
           <h2>My Prompt History</h2>
+          <input style={{ maxWidth: 280, margin: 0 }} value={historySearch}
+            onChange={e => setHistorySearch(e.target.value)}
+            placeholder="🔍 Search my prompts and answers…" />
           <a className="muted" href="#" onClick={async (e) => {
             e.preventDefault()
             const res = await api('/prompts/export?fmt=csv', { raw: true })

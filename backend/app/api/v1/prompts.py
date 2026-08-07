@@ -5,6 +5,7 @@ import io
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
@@ -56,13 +57,14 @@ async def submit_prompt(
     wants_image: bool = Form(False),
     priority: int = Form(0, ge=0, le=10),
     computer_name: str = Form("", max_length=128),
+    image_size: str = Form("auto", max_length=32),
     files: list[UploadFile] = File(default=[]),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> PromptOut:
     data = PromptCreate(
         prompt_text=prompt_text, wants_image=wants_image,
-        priority=priority, computer_name=computer_name,
+        priority=priority, computer_name=computer_name, image_size=image_size,
     )
     try:
         prompt = await PromptService(db).submit(user, data, files)
@@ -91,6 +93,63 @@ async def image_instruction(
 
     settings = await AppSettingsService(db).effective()
     return {"instruction": settings.image_prompt_instruction}
+
+
+@router.get("/image-sizes")
+async def image_sizes(_: User = Depends(get_current_user)) -> dict:
+    """Available output size presets for image jobs."""
+    from app.services.image_presets import DEFAULT_PRESET, presets_list
+
+    return {"presets": presets_list(), "default": DEFAULT_PRESET}
+
+
+class ImproveRequest(BaseModel):
+    prompt_text: str = Field(min_length=1, max_length=8000)
+    wants_image: bool = False
+
+
+@router.post("/improve", status_code=201)
+async def improve_prompt(
+    body: ImproveRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Ask the AI to rewrite a rough request into a better prompt.
+
+    Runs as a short, high-priority helper job so it comes back in seconds
+    instead of waiting behind long image jobs. Poll `/prompts/improve/{id}`.
+    """
+    from app.services.prompt_builder import build_improve_prompt
+
+    data = PromptCreate(
+        prompt_text=build_improve_prompt(body.prompt_text, body.wants_image),
+        wants_image=False, computer_name="prompt-improver", is_utility=True,
+    )
+    try:
+        prompt = await PromptService(db).submit(user, data, [])
+    except QuotaExceededError as exc:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, str(exc))
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    return {"id": prompt.id, "status": prompt.status.value}
+
+
+@router.get("/improve/{prompt_id}")
+async def improve_result(
+    prompt: Prompt = Depends(get_accessible_prompt),
+) -> dict:
+    """Status/result of a prompt-improvement job."""
+    from app.services.prompt_builder import clean_improved_text
+
+    if not prompt.is_utility:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Not an improvement job")
+    return {
+        "id": prompt.id,
+        "status": prompt.status.value,
+        "improved_text": (clean_improved_text(prompt.response_text)
+                          if prompt.status == PromptStatus.completed else None),
+        "error": prompt.error,
+    }
 
 
 @router.get("/export")
@@ -131,6 +190,7 @@ async def export_my_history(
 async def list_prompts(
     status_filter: PromptStatus | None = Query(default=None, alias="status"),
     search: str | None = Query(default=None, max_length=200),
+    only_images: bool | None = Query(default=None),
     all_users: bool = Query(default=False),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
@@ -141,7 +201,7 @@ async def list_prompts(
     user_filter = None if (all_users and user.role == UserRole.admin) else user.id
     items, total = await PromptRepository(db).list(
         user_id=user_filter, status=status_filter, search=search,
-        page=page, page_size=page_size,
+        wants_image=only_images, page=page, page_size=page_size,
     )
     return PromptListOut(
         items=[to_out(p) for p in items], total=total, page=page, page_size=page_size
@@ -169,6 +229,24 @@ async def cancel_prompt(
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
     return to_out(prompt)
+
+
+@router.post("/{prompt_id}/regenerate", response_model=PromptOut, status_code=201)
+async def regenerate_prompt(
+    prompt: Prompt = Depends(get_accessible_prompt),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> PromptOut:
+    """Run the same request again as a new job — the previous result is
+    kept, so both versions can be compared."""
+    try:
+        new_prompt = await PromptService(db).regenerate(prompt, user)
+    except QuotaExceededError as exc:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, str(exc))
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    position = await QueueService().position(new_prompt.id)
+    return to_out(new_prompt, position)
 
 
 @router.post("/{prompt_id}/retry", response_model=PromptOut)

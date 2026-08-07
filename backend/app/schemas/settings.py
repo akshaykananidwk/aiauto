@@ -25,6 +25,9 @@ class AdminSettings(BaseModel):
     # sent to the AI — empty disables the feature
     image_prompt_instruction: str = Field(
         default=DEFAULT_IMAGE_INSTRUCTION, max_length=2000)
+    # delete result/upload FILES older than N days (prompt text is kept
+    # so history stays readable). 0 = never delete anything
+    file_retention_days: int = Field(default=0, ge=0, le=3650)
 
 
 class AdminSettingsUpdate(BaseModel):
@@ -42,3 +45,4 @@ class AdminSettingsUpdate(BaseModel):
     default_monthly_limit: int | None = Field(default=None, ge=0, le=10_000_000)
     announcement: str | None = Field(default=None, max_length=2000)
     image_prompt_instruction: str | None = Field(default=None, max_length=2000)
+    file_retention_days: int | None = Field(default=None, ge=0, le=3650)

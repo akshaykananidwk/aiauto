@@ -83,6 +83,10 @@ class Settings(BaseSettings):
     worker_id: str = ""  # unique per worker machine; auto-generated when empty
     chrome_cdp_url: str = "http://localhost:9222"
     chrome_profile_dir: str = ""
+    # optional multi-account throughput: "PORT|PROFILE,PORT|PROFILE"
+    # e.g. 9222|C:\aiauto-chrome,9223|C:\aiauto-chrome-2 — start.py opens one
+    # Chrome and one worker per entry so jobs run in parallel
+    chrome_accounts: str = ""
     chrome_headless: bool = False
     chatgpt_url: str = "https://chatgpt.com"
     response_timeout_seconds: int = 480

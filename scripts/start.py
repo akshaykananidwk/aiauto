@@ -45,11 +45,16 @@ def say(mark: str, msg: str) -> None:
     print(f"  {mark} {msg}")
 
 
-def spawn(name: str, cmd: list[str], cwd: Path) -> subprocess.Popen:
+def spawn(name: str, cmd: list[str], cwd: Path,
+          env: dict | None = None) -> subprocess.Popen:
     say("▶", f"starting {name}…")
-    proc = subprocess.Popen([str(c) for c in cmd], cwd=cwd)
+    proc = subprocess.Popen([str(c) for c in cmd], cwd=cwd, env=env)
     procs.append((name, proc))
+    PROC_ENV[name] = env
     return proc
+
+
+PROC_ENV: dict[str, dict | None] = {}
 
 
 def stop_all() -> None:
@@ -82,7 +87,7 @@ def load_config() -> dict:
         "s = get_settings()\n"
         "print(json.dumps({'redis_url': s.redis_url, 'cdp': s.chrome_cdp_url,\n"
         "  'profile': s.chrome_profile_dir, 'chatgpt': s.chatgpt_url,\n"
-        "  'env': s.env}))"
+        "  'accounts': s.chrome_accounts, 'env': s.env}))"
     )
     result = subprocess.run([str(VENV_PY), "-c", code], cwd=BACKEND,
                             capture_output=True, text=True, timeout=60)
@@ -197,6 +202,73 @@ def find_chrome() -> str | None:
     return None
 
 
+def load_accounts() -> list[dict]:
+    """Browser accounts to run in parallel (multi-account throughput).
+
+    Configured in .env as CHROME_ACCOUNTS — one entry per AI account,
+    each with its own debug port and Chrome profile folder:
+
+        CHROME_ACCOUNTS=9222|C:\\aiauto-chrome,9223|C:\\aiauto-chrome-2
+
+    Each account gets its own Chrome window and its own worker, so jobs
+    are processed in parallel. Not set = the single default account.
+    """
+    raw = (os.environ.get("CHROME_ACCOUNTS") or CFG.get("accounts") or "").strip()
+    if not raw:
+        return [{"name": "1", "cdp": CFG["cdp"] or "http://localhost:9222",
+                 "profile": CFG["profile"] or str(Path.home() / "aiauto-chrome")}]
+    accounts = []
+    for index, entry in enumerate(raw.split(","), start=1):
+        entry = entry.strip()
+        if not entry:
+            continue
+        port, _, profile = entry.partition("|")
+        port = port.strip().rsplit(":", 1)[-1]  # accepts "9222" or a full url
+        if not port.isdigit():
+            die(f"CHROME_ACCOUNTS entry {index} is invalid: {entry!r} — "
+                "use PORT|PROFILE_FOLDER, e.g. 9222|C:\\aiauto-chrome")
+        accounts.append({
+            "name": str(index),
+            "cdp": f"http://localhost:{port}",
+            "profile": profile.strip() or str(Path.home() / f"aiauto-chrome-{index}"),
+        })
+    return accounts
+
+
+def ensure_chrome_for(account: dict) -> bool:
+    """Launch/attach one account's Chrome; True when its debug port answers."""
+    cdp, profile = account["cdp"], account["profile"]
+    port = urlparse(cdp).port or 9222
+    if cdp_alive(cdp):
+        say(OK, f"account {account['name']}: Chrome already running on port "
+                f"{port} — reconnecting (no duplicate window)")
+        return True
+    chrome = find_chrome()
+    if chrome is None:
+        say(FAIL, "Google Chrome not found — install it or start it manually with "
+                  "scripts/start_master_chrome.bat")
+        return False
+    say("▶", f"account {account['name']}: opening Chrome "
+             f"(profile {profile}, debug port {port})…")
+    subprocess.Popen([
+        chrome,
+        f"--remote-debugging-port={port}",
+        f"--user-data-dir={profile}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        CFG["chatgpt"],
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for _ in range(30):
+        if cdp_alive(cdp):
+            say(OK, f"account {account['name']}: Chrome connected "
+                    "(existing login is preserved)")
+            return True
+        time.sleep(1)
+    say(FAIL, f"account {account['name']}: Chrome did not expose the debugging "
+              f"port {port} within 30 s")
+    return False
+
+
 def ensure_chrome() -> bool:
     cdp = CFG["cdp"] or "http://localhost:9222"
     if cdp_alive(cdp):
@@ -279,22 +351,39 @@ def main() -> int:
 
     chrome_ok = True
     if run_worker:
+        accounts = load_accounts()
+        multi = len(accounts) > 1
         if not args.no_chrome:
-            print("\n[4/6] Chrome (ChatGPT Pro session)")
-            chrome_ok = ensure_chrome()
+            print("\n[4/6] Chrome (AI browser session"
+                  + (f"s — {len(accounts)} accounts)" if multi else ")"))
+            results = [ensure_chrome_for(a) for a in accounts]
+            chrome_ok = any(results)
+            if multi and not all(results):
+                say(WARN, "some accounts' Chrome did not start — the rest "
+                          "continue with reduced throughput")
         else:
             print("\n[4/6] Chrome — skipped (--no-chrome)")
 
-        print("\n[5/6] Browser-automation worker")
+        print("\n[5/6] Browser-automation worker"
+              + ("s" if multi else ""))
         pre = fetch_health(args.port) or {}
-        if pre.get("worker"):
+        if pre.get("worker") and not multi:
             say(OK, "a worker is already online — not starting a duplicate")
         else:
-            spawn("worker", [VENV_PY, "-m", "worker.main"], BACKEND)
-        health = wait_health(args.port, lambda h: h.get("worker"), 45, "worker")
+            for account in accounts:
+                # each worker drives its OWN Chrome/account — that is what
+                # makes parallel processing safe
+                env = {**os.environ,
+                       "CHROME_CDP_URL": account["cdp"],
+                       "CHROME_PROFILE_DIR": account["profile"],
+                       "WORKER_ID": f"{socket.gethostname()}-acct{account['name']}"}
+                spawn(f"worker-{account['name']}",
+                      [VENV_PY, "-m", "worker.main"], BACKEND, env=env)
+        health = wait_health(args.port, lambda h: h.get("worker"), 60, "worker")
         if health is None:
             die("worker did not come online — check the worker output above")
-        say(OK, "worker online")
+        say(OK, f"{'workers' if multi else 'worker'} online"
+                + (f" ({len(accounts)} accounts → parallel processing)" if multi else ""))
         if not args.no_chrome:
             health = wait_health(args.port, lambda h: h.get("chrome"), 30, "chrome")
             if health is None:
@@ -379,7 +468,11 @@ def main() -> int:
                     spawn(name, [VENV_PY, "-m", "uvicorn", "app.main:app",
                                  "--host", args.host, "--port", str(args.port)], BACKEND)
                 else:
-                    spawn(name, [VENV_PY, "-m", "worker.main"], BACKEND)
+                    # restart the worker with ITS OWN account environment,
+                    # otherwise a multi-account worker would come back
+                    # pointing at the default Chrome
+                    spawn(name, [VENV_PY, "-m", "worker.main"], BACKEND,
+                          env=PROC_ENV.get(name))
                 break
             time.sleep(2)
     except KeyboardInterrupt:

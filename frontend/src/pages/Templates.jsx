@@ -5,6 +5,25 @@ import { useAuth } from '../App'
 
 const EMPTY = { title: '', body: '', category: '', tags: '', is_shared: false }
 
+// {{variable}} placeholders let one template serve many cases: the user
+// fills the blanks when using it instead of editing the text every time.
+const VAR_RE = /\{\{\s*([^}]+?)\s*\}\}/g
+
+export function extractVariables(body) {
+  const names = []
+  for (const match of String(body || '').matchAll(VAR_RE)) {
+    if (!names.includes(match[1])) names.push(match[1])
+  }
+  return names
+}
+
+export function fillVariables(body, values) {
+  return String(body || '').replace(VAR_RE, (whole, name) => {
+    const value = values[name]
+    return value === undefined || value === '' ? whole : value
+  })
+}
+
 export default function Templates() {
   const { user } = useAuth()
   const navigate = useNavigate()
@@ -50,10 +69,22 @@ export default function Templates() {
     } catch (err) { setError(err.message) }
   }
 
-  const use = async (tpl) => {
+  const [filling, setFilling] = useState(null)   // {tpl, vars, values}
+
+  const sendToComposer = async (tpl, text) => {
     try { await api(`/templates/${tpl.id}/use`, { method: 'POST' }) } catch { /* count only */ }
-    localStorage.setItem('aiauto_draft', tpl.body)
+    localStorage.setItem('aiauto_draft', text)
     navigate('/')
+  }
+
+  const use = async (tpl) => {
+    const vars = extractVariables(tpl.body)
+    if (vars.length > 0) {
+      // ask for the blanks first, then send the filled prompt
+      setFilling({ tpl, vars, values: Object.fromEntries(vars.map(v => [v, ''])) })
+      return
+    }
+    await sendToComposer(tpl, tpl.body)
   }
 
   const favorite = async (tpl) => {
@@ -91,6 +122,13 @@ export default function Templates() {
           <input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} required />
           <label>Prompt text</label>
           <textarea value={form.body} onChange={e => setForm(f => ({ ...f, body: e.target.value }))} required />
+          <span className="muted">
+            Tip: write <code>{'{{topic}}'}</code> or <code>{'{{date}}'}</code> for blanks —
+            whoever uses the template is asked to fill them in.
+            {extractVariables(form.body).length > 0 &&
+              <> Detected: {extractVariables(form.body).map(v =>
+                <span key={v} className="badge processing" style={{ marginLeft: 4 }}>{v}</span>)}</>}
+          </span>
           <div className="grid cols-2">
             <div><label>Category</label>
               <input value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))}
@@ -155,6 +193,34 @@ export default function Templates() {
           {templates.length === 0 && <div className="muted">No templates yet — create the first one.</div>}
         </div>
       </div>
+
+      {filling && (
+        <div className="viewer-overlay" onClick={() => setFilling(null)}>
+          <div className="viewer" onClick={e => e.stopPropagation()}>
+            <h2 style={{ marginTop: 0 }}>Fill in: {filling.tpl.title}</h2>
+            {filling.vars.map(name => (
+              <div key={name}>
+                <label>{name}</label>
+                <input autoFocus={name === filling.vars[0]} value={filling.values[name]}
+                  onChange={e => setFilling(f => ({
+                    ...f, values: { ...f.values, [name]: e.target.value },
+                  }))} />
+              </div>
+            ))}
+            <label style={{ marginTop: 12 }}>Preview</label>
+            <div className="response-box" style={{ maxHeight: 180, overflow: 'auto' }}>
+              {fillVariables(filling.tpl.body, filling.values)}
+            </div>
+            <div className="row" style={{ marginTop: 14, gap: 8, justifyContent: 'flex-end' }}>
+              <button className="btn ghost" onClick={() => setFilling(null)}>Cancel</button>
+              <button className="btn" onClick={() =>
+                sendToComposer(filling.tpl, fillVariables(filling.tpl.body, filling.values))}>
+                Use this prompt →
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

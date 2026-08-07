@@ -13,6 +13,9 @@ class PromptCreate(BaseModel):
     wants_image: bool = False
     priority: int = Field(default=0, ge=0, le=10)
     computer_name: str = Field(default="", max_length=128)
+    image_size: str = Field(default="auto", max_length=32)
+    parent_id: str | None = Field(default=None, max_length=32)
+    is_utility: bool = False
 
 
 class FileOut(BaseModel):
@@ -37,6 +40,8 @@ class PromptOut(BaseModel):
     status: PromptStatus
     priority: int
     wants_image: bool
+    image_size: str = "auto"
+    parent_id: str | None = None
     error: str | None = None
     retry_count: int
     computer_name: str

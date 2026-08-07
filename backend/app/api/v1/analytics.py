@@ -34,6 +34,7 @@ async def analytics_overview(
         "daily": await svc.daily_series(min(days, 60)),
         "top_users": await svc.top_users(days),
         "by_department": await svc.by_department(days),
+        "timing": await svc.timing(days),
     }
     await cache_set(cache_key, result, ttl_seconds=60)
     return result

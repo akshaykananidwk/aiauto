@@ -18,6 +18,23 @@ from app.services.quota import QuotaService
 from app.services.storage import StorageService, guess_mime, safe_filename
 
 
+class _StoredUpload:
+    """Adapter that lets an already-stored file go through submit()'s
+    normal upload path (same size checks, same ordering guarantees)."""
+
+    def __init__(self, filename: str, content: bytes, content_type: str):
+        self.filename = filename
+        self.content_type = content_type
+        self._content = content
+        self._done = False
+
+    async def read(self, _size: int = -1) -> bytes:
+        if self._done:
+            return b""
+        self._done = True
+        return self._content
+
+
 class PromptService:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -37,12 +54,23 @@ class PromptService:
         await self.storage.check_storage_limit_async(admin_settings.storage_limit_gb)
         await QuotaService(self.db).check(user)  # raises QuotaExceededError
 
+        from app.services.image_presets import DEFAULT_PRESET, is_valid
+
+        if not is_valid(data.image_size):
+            raise ValueError(f"unknown image size preset: {data.image_size}")
+
         prompt = Prompt(
             user_id=user.id,
             prompt_text=data.prompt_text,
             wants_image=data.wants_image,
-            # staff cannot raise their own priority; admins can
-            priority=data.priority if user.role.value == "admin" else 0,
+            image_size=data.image_size or DEFAULT_PRESET,
+            parent_id=data.parent_id,
+            is_utility=data.is_utility,
+            # staff cannot raise their own priority; admins can. Utility
+            # jobs (prompt improvement) are short and interactive, so they
+            # jump the queue instead of blocking a person for minutes.
+            priority=(9 if data.is_utility
+                      else data.priority if user.role.value == "admin" else 0),
             computer_name=data.computer_name,
             department=user.department,
         )
@@ -99,6 +127,32 @@ class PromptService:
             "queue_position": position,
         })
         return prompt
+
+    async def regenerate(self, prompt: Prompt, by_user: User) -> Prompt:
+        """Run the same request again as a NEW job, keeping the old result.
+
+        Uploaded reference files are carried over — and they are attached
+        through the normal submit path, so they are on disk BEFORE the job
+        is queued (a worker must never start on a half-built job).
+        """
+        uploads: list[_StoredUpload] = []
+        for f in prompt.files:
+            if f.kind != FileKind.upload:
+                continue
+            try:
+                content = self.storage.abs_path(f.rel_path).read_bytes()
+            except OSError:
+                continue  # the original upload is gone — skip it
+            uploads.append(_StoredUpload(f.filename, content, f.mime_type))
+
+        data = PromptCreate(
+            prompt_text=prompt.prompt_text,
+            wants_image=prompt.wants_image,
+            image_size=prompt.image_size,
+            computer_name=prompt.computer_name,
+            parent_id=prompt.id,
+        )
+        return await self.submit(by_user, data, uploads)
 
     async def cancel(self, prompt: Prompt, by_user: User) -> Prompt:
         if prompt.status not in (PromptStatus.waiting, PromptStatus.processing):

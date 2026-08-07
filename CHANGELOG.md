@@ -1,5 +1,47 @@
 # Changelog
 
+## 1.5.0 — Productivity release (9 requested features)
+
+**Images**
+- **Output size presets**: pick Square 1:1, Portrait 4:5, Vertical 9:16,
+  Landscape 16:9, Thumbnail 1280×720, Wide banner, or A4 print. The
+  aspect ratio is requested from the AI *and* the captured image is
+  fitted to the exact pixel size, so you get what you picked. "Auto"
+  keeps the AI's own format
+- **🔄 Regenerate**: run the same request again as a NEW job — the old
+  result is kept, both can be compared, and reference uploads and the
+  size preset carry over. Each job links back to the one it came from
+- **Reference images**: attach a picture to an image job and the AI is
+  told to use it as the visual reference ("make one like this")
+
+**Prompts**
+- **✨ Improve prompt**: the AI rewrites a rough request into a clear,
+  detailed prompt before you send it. Runs as a short high-priority
+  helper job (seconds, not minutes) and never appears in your history;
+  one click undoes it and restores your own wording
+- **Template variables**: write `{{topic}}`, `{{date}}` … in a template
+  and whoever uses it is asked to fill the blanks, with a live preview
+  of the final prompt — one template now serves many cases
+- **Full-text search** in your history: searches the request *and* the
+  AI's answer, with an images-only filter
+
+**Speed & operations**
+- **Multi-account parallel processing**: set `CHROME_ACCOUNTS` in .env
+  (`9222|C:\aiauto-chrome,9223|C:\aiauto-chrome-2`) and start.bat opens
+  one Chrome window and one worker per account, so several jobs run at
+  the same time. The one-worker-per-machine guard became
+  one-worker-per-browser, which is what actually prevents conflicts
+- **Processing-time analytics**: median/average/fastest/slowest per job
+  type, queue wait, success rate and a busiest-hours chart in Admin →
+  Analytics
+- **Automatic cleanup**: Admin → Settings can delete result files older
+  than N days (0 = never, the default). Prompt text and history are
+  always kept — only the files are removed, freeing disk automatically
+
+**Also**: the staff dashboard no longer refetches stats and quota on
+every live event or keystroke (3 API calls → 1), 31 new tests (152
+total), and a 15-check browser E2E covering every feature above.
+
 ## 1.4.0 — Automatic English image instruction
 
 Staff write their idea in their own language and tick "Generate image";

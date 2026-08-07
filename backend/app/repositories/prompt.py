@@ -22,23 +22,35 @@ class PromptRepository:
         user_id: int | None = None,
         status: PromptStatus | None = None,
         search: str | None = None,
+        wants_image: bool | None = None,
         created_after: datetime | None = None,
         created_before: datetime | None = None,
+        include_utility: bool = False,
         page: int = 1,
         page_size: int = 20,
     ) -> tuple[list[Prompt], int]:
         stmt = select(Prompt)
         count_stmt = select(func.count(Prompt.id))
+        if not include_utility:
+            # internal helper jobs (prompt improvement) never show in history
+            stmt = stmt.where(Prompt.is_utility.is_(False))
+            count_stmt = count_stmt.where(Prompt.is_utility.is_(False))
         if user_id is not None:
             stmt = stmt.where(Prompt.user_id == user_id)
             count_stmt = count_stmt.where(Prompt.user_id == user_id)
         if status is not None:
             stmt = stmt.where(Prompt.status == status)
             count_stmt = count_stmt.where(Prompt.status == status)
+        if wants_image is not None:
+            stmt = stmt.where(Prompt.wants_image.is_(wants_image))
+            count_stmt = count_stmt.where(Prompt.wants_image.is_(wants_image))
         if search:
+            # full-text: the request AND the answer, so results can be found
+            # by something the AI wrote too
             like = f"%{search}%"
-            stmt = stmt.where(Prompt.prompt_text.ilike(like))
-            count_stmt = count_stmt.where(Prompt.prompt_text.ilike(like))
+            match = Prompt.prompt_text.ilike(like) | Prompt.response_text.ilike(like)
+            stmt = stmt.where(match)
+            count_stmt = count_stmt.where(match)
         if created_after is not None:
             stmt = stmt.where(Prompt.created_at >= created_after)
             count_stmt = count_stmt.where(Prompt.created_at >= created_after)

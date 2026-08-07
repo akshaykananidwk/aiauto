@@ -38,6 +38,13 @@ class Prompt(TimestampMixin, Base):
     )
     priority: Mapped[int] = mapped_column(Integer, default=0, nullable=False)  # higher = sooner
     wants_image: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # output size preset for image jobs (see services/image_presets.py)
+    image_size: Mapped[str] = mapped_column(String(32), default="auto", nullable=False)
+    # set when this job was created by "Regenerate" from another one
+    parent_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # internal helper jobs (e.g. prompt improvement) — hidden from history
+    is_utility: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, index=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     # request context, captured at submission time

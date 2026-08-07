@@ -74,8 +74,12 @@ class QueueService:
 
     # ---- worker registry (supports multiple workers) ----
     async def register_heartbeat(
-        self, worker_id: str, *, chrome: str, current_job: str | None
+        self, worker_id: str, *, chrome: str, current_job: str | None,
+        endpoint: str = "",
     ) -> None:
+        """`endpoint` identifies WHICH browser this worker drives (CDP url or
+        profile dir) — several workers may share a machine as long as each
+        one has its own Chrome/account."""
         key = WORKERS_PREFIX + worker_id
         from datetime import datetime, timezone
 
@@ -83,6 +87,7 @@ class QueueService:
             "heartbeat": datetime.now(timezone.utc).isoformat(),
             "chrome": chrome,
             "current_job": current_job or "",
+            "endpoint": endpoint,
         })
         await self.redis.expire(key, WORKER_TTL_SECONDS)
 

@@ -34,6 +34,7 @@ from app.models.prompt import Prompt, PromptStatus
 from app.schemas.settings import AdminSettings
 from app.services import events
 from app.services.audit import audit
+from app.services.image_presets import fit_to_preset
 from app.services.notify import NotificationService
 from app.services.prompt_builder import build_image_prompt
 from app.services.queue import QueueService
@@ -96,6 +97,10 @@ class Worker:
         self.provider = ChatGPTProvider()
         self.stopping = asyncio.Event()
         self.current_job: str | None = None
+        # which browser/account this worker drives — several workers can
+        # share one computer as long as each has its own Chrome instance
+        self.endpoint = (self.settings.chrome_cdp_url
+                         or self.settings.chrome_profile_dir or "default")
 
     # ---------- status ----------
 
@@ -116,6 +121,7 @@ class Worker:
                     self.worker_id,
                     chrome="connected" if healthy else "disconnected",
                     current_job=self.current_job,
+                    endpoint=self.endpoint,
                 )
             except Exception as exc:
                 logger.warning("heartbeat failed: %s", exc)
@@ -192,6 +198,8 @@ class Worker:
             return rel, size
 
         for filename, data in result.images:
+            # fit to the requested output size preset (no-op for "auto")
+            data = fit_to_preset(data, prompt.image_size)
             rel, size = _save_verified(filename, data)
             thumb = storage.make_thumbnail(rel)  # thumbnail failure is non-fatal
             db.add(PromptFile(
@@ -276,12 +284,20 @@ class Worker:
                 ]
 
                 # image jobs get an explicit English image instruction
-                # appended — the staff member's own text is untouched in
-                # the DB/UI, only the copy sent to the AI carries it
+                # appended (plus size + reference-image sentences) — the
+                # staff member's own text is untouched in the DB/UI, only
+                # the copy sent to the AI carries it
                 text_to_send = prompt.prompt_text
                 if prompt.wants_image:
+                    from app.services.storage import is_image as _is_image
+
+                    has_refs = any(
+                        f.kind == FileKind.upload and _is_image(f.filename)
+                        for f in prompt.files)
                     text_to_send = build_image_prompt(
-                        prompt.prompt_text, admin.image_prompt_instruction)
+                        prompt.prompt_text, admin.image_prompt_instruction,
+                        image_size=prompt.image_size,
+                        has_reference_images=has_refs)
 
                 try:
                     await self.provider.start()
@@ -484,32 +500,40 @@ class Worker:
         await init_db()
         logger.info("worker %s starting (ChatGPT browser automation)", self.worker_id)
 
-        # singleton per machine: two workers sharing one Chrome corrupt each
-        # other's pages (TargetClosedError chaos). Refuse to double-start —
-        # but a crashed predecessor leaves a heartbeat behind for up to 20s,
-        # so wait out the TTL and only yield to a twin that is STILL alive.
+        # One worker per BROWSER, not per computer: several workers may run
+        # side by side (multi-account throughput) as long as each drives its
+        # own Chrome. Two workers on the SAME Chrome corrupt each other's
+        # pages (TargetClosedError chaos), so that case still exits.
+        # A crashed predecessor leaves a heartbeat behind for up to 20s, so
+        # wait out the TTL and only yield to a twin that is STILL alive.
         if not os.environ.get("AIAUTO_ALLOW_MULTI_WORKER"):
             try:
                 hostname_prefix = f"{socket.gethostname()}-"
 
                 async def _twins() -> list[str]:
-                    return [w["id"] for w in await self.queue.live_workers()
-                            if w["id"].startswith(hostname_prefix)
-                            and w["id"] != self.worker_id]
+                    return [
+                        w["id"] for w in await self.queue.live_workers()
+                        if w["id"] != self.worker_id
+                        and w["id"].startswith(hostname_prefix)
+                        # same machine AND same browser = a real conflict
+                        and (w.get("endpoint") or "default") == self.endpoint
+                    ]
 
                 twins = await _twins()
                 if twins:
                     logger.warning(
-                        "another worker (%s) may be running on this computer — "
+                        "another worker (%s) may already be using %s — "
                         "waiting %ss to see if it is real or a stale heartbeat",
-                        twins[0], 25)
+                        twins[0], self.endpoint, 25)
                     await asyncio.sleep(25)
                     twins = await _twins()
                 if twins:
                     logger.error(
-                        "another worker (%s) is already running on this computer — "
-                        "exiting to avoid fighting over the same Chrome. "
-                        "(set AIAUTO_ALLOW_MULTI_WORKER=1 to override)", twins[0])
+                        "another worker (%s) is already driving %s — exiting to "
+                        "avoid fighting over the same Chrome. For multi-account "
+                        "throughput give each worker its own CHROME_CDP_URL and "
+                        "CHROME_PROFILE_DIR. (AIAUTO_ALLOW_MULTI_WORKER=1 "
+                        "overrides this check)", twins[0], self.endpoint)
                     return
             except Exception:
                 pass  # Redis unavailable — proceed; heartbeats will sort it out

@@ -73,6 +73,74 @@ class AnalyticsService:
             for d, c in (await self.db.execute(stmt)).all()
         ]
 
+    async def timing(self, days: int = 30, sample_cap: int = 5000) -> dict:
+        """Processing-time statistics + busiest hours.
+
+        Computed in Python over a bounded sample so it works identically on
+        SQLite and PostgreSQL (SQLite has no extract(epoch)).
+        """
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+        rows = (await self.db.execute(
+            select(Prompt.started_at, Prompt.completed_at, Prompt.created_at,
+                   Prompt.status, Prompt.wants_image)
+            .where(Prompt.created_at >= since, Prompt.is_utility.is_(False))
+            .order_by(Prompt.created_at.desc())
+            .limit(sample_cap)
+        )).all()
+
+        def seconds(a, b) -> float | None:
+            if a is None or b is None:
+                return None
+            delta = (b - a).total_seconds()
+            return delta if delta >= 0 else None
+
+        run_image: list[float] = []
+        run_text: list[float] = []
+        waits: list[float] = []
+        by_hour = [0] * 24
+        done = failed = 0
+        for started, completed, created, status, wants_image in rows:
+            if created is not None:
+                by_hour[created.hour] += 1
+            if status == PromptStatus.completed:
+                done += 1
+            elif status == PromptStatus.failed:
+                failed += 1
+            wait = seconds(created, started)
+            if wait is not None:
+                waits.append(wait)
+            run = seconds(started, completed)
+            if run is not None and status == PromptStatus.completed:
+                (run_image if wants_image else run_text).append(run)
+
+        def stats(values: list[float]) -> dict:
+            if not values:
+                return {"count": 0, "avg": None, "median": None,
+                        "fastest": None, "slowest": None}
+            ordered = sorted(values)
+            mid = len(ordered) // 2
+            median = (ordered[mid] if len(ordered) % 2
+                      else (ordered[mid - 1] + ordered[mid]) / 2)
+            return {
+                "count": len(ordered),
+                "avg": round(sum(ordered) / len(ordered), 1),
+                "median": round(median, 1),
+                "fastest": round(ordered[0], 1),
+                "slowest": round(ordered[-1], 1),
+            }
+
+        finished = done + failed
+        return {
+            "images": stats(run_image),
+            "text": stats(run_text),
+            "queue_wait": stats(waits),
+            "by_hour": [{"hour": h, "count": c} for h, c in enumerate(by_hour)],
+            "success_rate": round(done / finished * 100, 1) if finished else None,
+            "completed": done,
+            "failed": failed,
+            "sampled": len(rows),
+        }
+
     async def totals(self, days: int = 30) -> dict:
         since = datetime.now(timezone.utc) - timedelta(days=days)
         count = (

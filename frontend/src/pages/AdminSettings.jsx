@@ -73,6 +73,18 @@ export default function AdminSettings() {
           Staff can write their prompt in any language; this instruction makes
           the AI reliably return a real image instead of a text answer.
         </span>
+        <label style={{ marginTop: 12 }}>
+          Delete result files older than (days) — 0 = keep everything for ever
+        </label>
+        <input type="number" min="0" max="3650"
+          value={settings.file_retention_days ?? 0}
+          onChange={e => setSettings(s => ({
+            ...s, file_retention_days: Number(e.target.value),
+          }))} />
+        <span className="muted">
+          Automatic daily cleanup of old images/uploads to free disk space.
+          Prompt text and history are always kept — only the files are removed.
+        </span>
         <div style={{ marginTop: 20 }}><button className="btn">Save Settings</button></div>
       </form>
     </div>

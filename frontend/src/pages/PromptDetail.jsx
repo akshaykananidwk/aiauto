@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, useNavigate, Link } from 'react-router-dom'
 import { api, downloadFile, fileLink, thumbnailUrl } from '../api'
 import { connectEvents } from '../ws'
 
 export default function PromptDetail() {
   const { id } = useParams()
+  const navigate = useNavigate()
   const [prompt, setPrompt] = useState(null)
   const [thumbs, setThumbs] = useState({})
   const [viewer, setViewer] = useState(null)   // {file, url, view_url} for the image modal
@@ -103,6 +104,14 @@ export default function PromptDetail() {
     catch (err) { setError(err.message) }
   }
 
+  // Run the same request again as a NEW job — the current result is kept
+  const regenerate = async () => {
+    try {
+      const fresh = await api(`/prompts/${id}/regenerate`, { method: 'POST' })
+      navigate(`/prompt/${fresh.id}`)
+    } catch (err) { setError(err.message) }
+  }
+
   return (
     <div>
       <div className="row between">
@@ -110,6 +119,12 @@ export default function PromptDetail() {
         <div className="row">
           {cancelable && <button className="btn danger sm" onClick={() => action('cancel')}>Cancel</button>}
           {retryable && <button className="btn sm" onClick={() => action('retry')}>Retry</button>}
+          {!cancelable && (
+            <button className="btn secondary sm" onClick={regenerate}
+              title="Run the same request again — this result is kept">
+              🔄 Regenerate
+            </button>
+          )}
           <Link to="/" className="btn secondary sm">Back</Link>
         </div>
       </div>
@@ -126,6 +141,12 @@ export default function PromptDetail() {
         {prompt.error && <div className="alert error" style={{ marginTop: 12 }}>{prompt.error}</div>}
         <h2 style={{ marginTop: 16 }}>Prompt</h2>
         <div className="response-box">{prompt.prompt_text}</div>
+        {prompt.parent_id && (
+          <p className="muted">
+            Regenerated from <Link to={`/prompt/${prompt.parent_id}`}>
+              {prompt.parent_id.slice(0, 8)}</Link>
+          </p>
+        )}
         {uploads.length > 0 && (
           <p className="muted">Attached: {uploads.map(f => f.filename).join(', ')}</p>
         )}

@@ -31,6 +31,7 @@ from app.services.audit import audit
 from app.services.notify import NotificationService
 from app.services.queue import QueueService
 from app.services.redis_client import get_redis
+from app.services.storage import StorageService
 
 logger = get_logger("scheduler")
 
@@ -38,6 +39,7 @@ LOCK_KEY = "aiauto:scheduler:lock"
 TICK_SECONDS = 30
 DISK_ALERT_KEY = "aiauto:scheduler:disk_alerted"
 BACKUP_MARK_KEY = "aiauto:scheduler:last_backup_day"
+CLEANUP_MARK_KEY = "aiauto:scheduler:last_cleanup_day"
 
 
 def compute_next_run(
@@ -103,6 +105,7 @@ class SchedulerService:
                         await self._run_due_schedules(db)
                         await self._requeue_orphans(db)
                         await self._check_disk(db)
+                        await self._cleanup_old_files(db)
                         await self._maybe_backup(db)
             except asyncio.CancelledError:
                 return
@@ -251,6 +254,57 @@ class SchedulerService:
                     "Free space or raise storage limits.",
                 )
                 await db.commit()
+
+    # ---- automatic cleanup of old result/upload files ----
+
+    async def _cleanup_old_files(self, db: AsyncSession) -> None:
+        """Delete FILES older than the retention period (the prompt text and
+        history rows are kept, so nothing disappears from the record).
+
+        Runs at most once a day, and only when an administrator has set a
+        retention period — the default (0) never deletes anything.
+        """
+        from app.models.file import PromptFile
+        from app.services.app_settings import AppSettingsService
+
+        settings = await AppSettingsService(db).effective()
+        days = settings.file_retention_days
+        if not days:
+            return
+        redis = get_redis()
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if await redis.get(CLEANUP_MARK_KEY) == today:
+            return
+        await redis.set(CLEANUP_MARK_KEY, today, ex=40 * 86400)
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        storage = StorageService()
+        rows = (await db.execute(
+            select(PromptFile).where(PromptFile.created_at < cutoff).limit(5000)
+        )).scalars().all()
+        removed = freed = 0
+        for row in rows:
+            for rel in (row.rel_path, row.thumb_rel_path):
+                if not rel:
+                    continue
+                try:
+                    path = storage.abs_path(rel)
+                    if path.exists():
+                        freed += path.stat().st_size
+                        path.unlink()
+                except (OSError, ValueError):
+                    continue  # keep going — one bad path must not stop cleanup
+            await db.delete(row)
+            removed += 1
+        if removed:
+            await audit(db, "storage.cleanup",
+                        f"deleted {removed} file(s) older than {days} days "
+                        f"({freed // (1024 * 1024)} MB freed)",
+                        level="warning", commit=True)
+            logger.info("retention cleanup: %s files removed, %s MB freed",
+                        removed, freed // (1024 * 1024))
+        else:
+            await db.commit()
 
     # ---- automatic daily backup ----
 

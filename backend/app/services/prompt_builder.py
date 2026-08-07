@@ -21,16 +21,58 @@ DEFAULT_IMAGE_INSTRUCTION = (
 
 SEPARATOR = "\n\n---\n"
 
+# added when the job carries uploaded images: the AI should treat them as
+# a visual reference ("make one like this") rather than as a document
+REFERENCE_IMAGE_INSTRUCTION = (
+    "Use the attached image(s) as the visual reference for style, "
+    "composition and subject."
+)
 
-def build_image_prompt(prompt_text: str, instruction: str | None = None) -> str:
+# sent as its own job when a user asks for their prompt to be improved
+IMPROVE_IMAGE_PROMPT = (
+    "Rewrite the request below into ONE clear, detailed English prompt for "
+    "an AI image generator. Keep the original meaning and every specific "
+    "detail; add helpful specifics about subject, setting, composition, "
+    "lighting, colours and style. Do not invent facts that change the "
+    "meaning. Reply with the improved prompt ONLY — no quotes, no "
+    "explanation, no options, no preamble.\n\nRequest:\n"
+)
+
+IMPROVE_TEXT_PROMPT = (
+    "Rewrite the request below into ONE clear, well-structured English "
+    "prompt for an AI assistant. Keep the original meaning and every "
+    "specific detail; make the task, the expected output and any format "
+    "requirements explicit. Reply with the improved prompt ONLY — no "
+    "quotes, no explanation, no preamble.\n\nRequest:\n"
+)
+
+
+def build_image_prompt(
+    prompt_text: str,
+    instruction: str | None = None,
+    *,
+    image_size: str | None = None,
+    has_reference_images: bool = False,
+) -> str:
     """Return the prompt to send for an image job.
 
-    Appends the English image instruction unless the staff member already
-    wrote one themselves (detected by the instruction's opening words) —
-    duplicating it would only confuse the model.
+    Appends the English image instruction (plus the size and reference
+    sentences when they apply) unless it is already present — a retried
+    job must not accumulate duplicate instructions.
     """
+    from app.services.image_presets import size_instruction
+
     text = (prompt_text or "").strip()
-    suffix = (instruction if instruction is not None else DEFAULT_IMAGE_INSTRUCTION).strip()
+    base = (instruction if instruction is not None else DEFAULT_IMAGE_INSTRUCTION).strip()
+
+    parts = [base] if base else []
+    if has_reference_images:
+        parts.append(REFERENCE_IMAGE_INSTRUCTION)
+    size_sentence = size_instruction(image_size)
+    if size_sentence:
+        parts.append(size_sentence)
+    suffix = " ".join(parts).strip()
+
     if not suffix:
         return text
     if suffix.lower() in text.lower():
@@ -38,3 +80,21 @@ def build_image_prompt(prompt_text: str, instruction: str | None = None) -> str:
     if not text:
         return suffix
     return f"{text}{SEPARATOR}{suffix}"
+
+
+def build_improve_prompt(prompt_text: str, wants_image: bool) -> str:
+    """The helper job that turns a rough request into a better prompt."""
+    head = IMPROVE_IMAGE_PROMPT if wants_image else IMPROVE_TEXT_PROMPT
+    return head + (prompt_text or "").strip()
+
+
+def clean_improved_text(raw: str) -> str:
+    """Strip the wrapping the AI sometimes adds around its answer."""
+    text = (raw or "").strip()
+    for prefix in ("improved prompt:", "here is the improved prompt:",
+                   "here's the improved prompt:", "prompt:"):
+        if text.lower().startswith(prefix):
+            text = text[len(prefix):].strip()
+    if len(text) >= 2 and text[0] in "\"“'" and text[-1] in "\"”'":
+        text = text[1:-1].strip()
+    return text
